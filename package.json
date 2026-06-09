@@ -1,0 +1,23 @@
+{
+  "name": "para-raid",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "para-raid": "./src/bin/para-raid.ts" },
+  "scripts": {
+    "start": "bun run src/daemon.ts",
+    "test": "bun test",
+    "dev": "bun --watch run src/daemon.ts",
+    "smoke:integration": "bun test tests/integration/",
+    "smoke:e2e": "bun run tests/e2e/burn-in-smoke.ts",
+    "smoke:burn-in": "bun run tests/e2e/burn-in-smoke.ts --keep-running --verbose"
+  },
+  "dependencies": {
+    "smol-toml": "^1.3.0",
+    "zod": "^3.23.0",
+    "chokidar": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.5.0"
+  }
+}

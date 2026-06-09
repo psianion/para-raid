@@ -1,0 +1,55 @@
+# === Dependencies / build ===
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+node-compile-cache/
+
+# === Secrets & runtime state — NEVER commit (keep the *.example.toml templates) ===
+config.toml
+mcp-bundles.toml
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+*.sock
+
+# === Environment ===
+.env
+.env.local
+.env.*.local
+
+# === Logs ===
+*.log
+
+# === Local-only project material (matches scrypt/uxie) ===
+docs/
+
+# === AI assistant state ===
+.claude/
+.superpowers/
+
+# === Editor / IDE ===
+.cursor/
+.vscode/
+.idea/
+.fleet/
+.zed/
+*.swp
+*.swo
+*~
+
+# === Merge / diff artifacts ===
+*.orig
+*.rej
+
+# === git worktrees ===
+.worktrees/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# NOTE: .github/ is intentionally NOT ignored — the CI workflow must reach
+# GitHub to run. bun.lock is committed on purpose (CI uses --frozen-lockfile).

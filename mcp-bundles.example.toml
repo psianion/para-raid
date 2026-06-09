@@ -1,0 +1,13 @@
+# para-raid MCP bundles — copy to ~/.config/para-raid/mcp-bundles.toml (next to
+# config.toml) and edit. A session passes a bundle name in open_session; the
+# daemon writes a matching .mcp.json into the worker's workdir so its claude
+# session can reach those MCP servers.
+
+# scrypt — the "second brain" MCP server (default: 127.0.0.1:3777, tailnet-only).
+[[bundles]]
+name = "scrypt"
+
+[[bundles.servers]]
+type = "http"
+name = "scrypt"
+url = "http://127.0.0.1:3777/mcp"
