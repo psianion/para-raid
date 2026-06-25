@@ -27,8 +27,9 @@ test("shouldDeadLetter returns false within retry window", () => {
 test("publisher delivers to mocked fetch and marks delivered", async () => {
   const db: Db = createDb(":memory:");
   const calls: string[] = [];
+  let eventIdHeader: string | undefined;
   const origFetch = globalThis.fetch;
-  globalThis.fetch = (async (url: string) => { calls.push(url); return new Response("ok", { status: 200 }); }) as any;
+  globalThis.fetch = (async (url: string, init: any) => { calls.push(url); eventIdHeader = init.headers["X-Para-Raid-Event-Id"]; return new Response("ok", { status: 200 }); }) as any;
 
   db.raw.run(
     `INSERT INTO webhook_queue (event_id, adapter_id, event_type, payload_json, webhook_url, status, attempt_count, next_attempt_at, created_at)
@@ -44,6 +45,7 @@ test("publisher delivers to mocked fetch and marks delivered", async () => {
   const row = db.raw.query<{ status: string }, []>("SELECT status FROM webhook_queue WHERE event_id='e1'").get();
   expect(row!.status).toBe("delivered");
   expect(calls).toEqual(["http://x/hook"]);
+  expect(eventIdHeader).toBe("e1"); // dedup key delivered to the adapter
   db.close();
 });
 
