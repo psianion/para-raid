@@ -17,9 +17,6 @@ export function createRealTmux(): TmuxAdapter {
       const { exitCode } = await run(["has-session", "-t", name]);
       return exitCode === 0;
     },
-    async sendKeys(name, text) {
-      await run(["send-keys", "-t", name, text]);
-    },
     async sendKeysLiteral(name, text) {
       await run(["send-keys", "-t", name, "-l", text]);
     },

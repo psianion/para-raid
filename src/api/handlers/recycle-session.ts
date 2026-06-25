@@ -2,8 +2,7 @@ import { z } from "zod";
 import { recycleSession } from "../../sessions/recycler";
 import type { Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
-import type { WebhookEventType } from "../../types";
-import { randomUUID } from "crypto";
+import { enqueueWebhook } from "../../publisher/enqueue";
 
 const Req = z.object({ session_id: z.string().uuid() });
 
@@ -34,12 +33,13 @@ export const recycleSessionHandler: Handler = async (req, ctx) => {
        VALUES (?,?,?,?,?,?,?,?,?,?)`,
       [newId, sess.adapter_id, sess.adapter_ref, "live", sess.tmux_session, sess.cwd, sess.mcp_bundle, sess.webhook_url, now, now]
     );
-    const eventType: WebhookEventType = "session_recycled";
-    ctx.db.raw.run(
-      `INSERT INTO webhook_queue (event_id, session_id, adapter_id, event_type, payload_json, webhook_url, status, attempt_count, next_attempt_at, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [randomUUID(), newId, sess.adapter_id, eventType, JSON.stringify({ event_type: eventType, session_id: newId, old_session_id: parsed.data.session_id, new_session_id: newId }), sess.webhook_url, "pending", 0, now, now]
-    );
+    enqueueWebhook(ctx.db, {
+      eventType: "session_recycled",
+      sessionId: newId,
+      adapterId: sess.adapter_id,
+      webhookUrl: sess.webhook_url,
+      payload: { old_session_id: parsed.data.session_id, new_session_id: newId },
+    });
   });
   return jsonResponse(202, { old_session_id: parsed.data.session_id, new_session_id: newId });
 };

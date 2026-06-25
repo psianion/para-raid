@@ -1,30 +1,16 @@
 import { z } from "zod";
 import { randomUUID, createHash } from "crypto";
-import type { Handler, HandlerCtx } from "../router";
+import type { Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
+import { enqueueWebhook } from "../../publisher/enqueue";
 import { getLastAssistantText } from "../../transcript/reader";
 import { findTranscriptForCwd } from "../../transcript/locator";
-import type { HookEvent, WebhookEventType } from "../../types";
+import type { HookEvent } from "../../types";
 
 const Req = z.object({
   session_id: z.string().uuid(),
   prompt: z.string().min(1),
 });
-
-function enqueueWebhook(
-  ctx: HandlerCtx,
-  eventType: WebhookEventType,
-  sessionId: string,
-  payload: Record<string, unknown>,
-  webhookUrl: string,
-  adapterId: string,
-) {
-  ctx.db.raw.run(
-    `INSERT INTO webhook_queue (event_id, session_id, adapter_id, event_type, payload_json, webhook_url, status, attempt_count, next_attempt_at, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [randomUUID(), sessionId, adapterId, eventType, JSON.stringify({ event_type: eventType, session_id: sessionId, ...payload }), webhookUrl, "pending", 0, Date.now(), Date.now()],
-  );
-}
 
 /**
  * Wave 3-4 lesson #1: Stop's `last_assistant_message` may be empty for very
@@ -112,28 +98,26 @@ export const sendTurnHandler: Handler = async (req, ctx) => {
         "UPDATE turns SET status = 'completed', completed_at = ? WHERE id = ?",
         [Date.now(), turnId],
       );
-      enqueueWebhook(
-        ctx,
-        "turn_replied",
-        data.session_id,
-        { session_id: data.session_id, turn_id: turnId, reply: reply ?? "" },
-        sess.webhook_url,
-        sess.adapter_id,
-      );
+      enqueueWebhook(ctx.db, {
+        eventType: "turn_replied",
+        sessionId: data.session_id,
+        adapterId: sess.adapter_id,
+        webhookUrl: sess.webhook_url,
+        payload: { session_id: data.session_id, turn_id: turnId, reply: reply ?? "" },
+      });
     } catch (err) {
       ctx.logger.error("send_turn.async_failed", { session_id: data.session_id, turn_id: turnId, error: String(err) });
       ctx.db.raw.run(
         "UPDATE turns SET status = 'failed', completed_at = ?, error = ? WHERE id = ?",
         [Date.now(), String(err), turnId],
       );
-      enqueueWebhook(
-        ctx,
-        "turn_failed",
-        data.session_id,
-        { session_id: data.session_id, turn_id: turnId, error: String(err) },
-        sess.webhook_url,
-        sess.adapter_id,
-      );
+      enqueueWebhook(ctx.db, {
+        eventType: "turn_failed",
+        sessionId: data.session_id,
+        adapterId: sess.adapter_id,
+        webhookUrl: sess.webhook_url,
+        payload: { session_id: data.session_id, turn_id: turnId, error: String(err) },
+      });
     }
   })();
 

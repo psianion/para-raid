@@ -21,9 +21,7 @@ export async function runDoctorChecks(checks: DoctorCheck[]): Promise<DoctorResu
 }
 
 async function which(bin: string): Promise<string | null> {
-  const p = Bun.spawn(["which", bin], { stdout: "pipe", stderr: "pipe" });
-  const out = (await new Response(p.stdout).text()).trim();
-  return (await p.exited) === 0 && out ? out : null;
+  return Bun.which(bin);
 }
 
 async function exec(args: string[]): Promise<{ ok: boolean; stdout: string }> {

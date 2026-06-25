@@ -1,7 +1,6 @@
-import { randomUUID } from "crypto";
 import type { BootCtx } from "./boot";
 import { cleanupWorkdir } from "../workdir";
-import type { WebhookEventType } from "../types";
+import { enqueueWebhook } from "../publisher/enqueue";
 
 export interface GraceTimer {
   stop: () => void;
@@ -51,23 +50,13 @@ export function startGraceTimer(ctx: BootCtx, intervalMs = 60_000): GraceTimer {
       } catch {
         // best-effort
       }
-      ctx.db.raw.run(
-        `INSERT INTO webhook_queue
-         (event_id, session_id, adapter_id, event_type, payload_json, webhook_url, status, attempt_count, next_attempt_at, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
-        [
-          randomUUID(),
-          sess.id,
-          sess.adapter_id,
-          ("session_dead" satisfies WebhookEventType),
-          JSON.stringify({ event_type: "session_dead", session_id: sess.id, reason: "grace_expired" }),
-          sess.webhook_url,
-          "pending",
-          0,
-          now,
-          now,
-        ],
-      );
+      enqueueWebhook(ctx.db, {
+        eventType: "session_dead",
+        sessionId: sess.id,
+        adapterId: sess.adapter_id,
+        webhookUrl: sess.webhook_url,
+        payload: { reason: "grace_expired" },
+      });
       ctx.logger.warn("recovery.grace.expired", { session_id: sess.id });
     }
   };
