@@ -1,5 +1,5 @@
 import { watch } from "chokidar";
-import { statSync, openSync, readSync, closeSync } from "fs";
+import { statSync, openSync, readSync, closeSync, writeFileSync } from "fs";
 import type { Db } from "../db";
 import type { EventBus } from "./bus";
 import type { HookEvent } from "../types";
@@ -14,6 +14,14 @@ export interface TailerOptions {
 }
 
 export function startTailer(filePath: string, db: Db, bus: EventBus, opts: TailerOptions = {}) {
+  // Ensure the file exists BEFORE chokidar watches it. Watching a not-yet-created
+  // path means the first hook write lands as a chokidar `add` event (not
+  // `change`), which we don't listen for — so the very first SessionStart would
+  // never reach the bus and every real session would time out at launch. The
+  // integration tests masked this by pre-creating the file. Append-mode create
+  // never truncates an existing file (daemon restart keeps prior content).
+  writeFileSync(filePath, "", { flag: "a" });
+
   const cursor = db.raw.query<{ file_inode: number; offset: number }, []>(
     "SELECT file_inode, offset FROM tailer_state WHERE id='singleton'"
   ).get();
@@ -76,6 +84,12 @@ export function startTailer(filePath: string, db: Db, bus: EventBus, opts: Taile
     usePolling: opts.polling ?? false,
   });
   watcher.on("change", readNewLines);
+  // Re-scan once the watcher is armed: a hook can write in the window between
+  // watch() returning and fsevents actually arming, and that first `change`
+  // would otherwise be lost — which on the launch path means a missed
+  // SessionStart and a session that times out. readNewLines is offset-based, so
+  // calling it again is a no-op when there's nothing new.
+  watcher.on("ready", readNewLines);
 
   return {
     stop() { return watcher.close(); },

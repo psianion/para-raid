@@ -48,3 +48,19 @@ Two things every adapter must do:
 
 A normal turn looks like: `session_open_acknowledged → session_live →
 tool_call* → turn_replied`.
+
+## Run it live
+
+`main.ts` is a one-shot smoke runner: it starts the receiver, opens one session,
+prints each verified webhook, and exits 0 on `turn_replied`. Point it at a
+running daemon (which must have a logged-in `claude`):
+
+```sh
+PARARAID_SOCKET=/path/to/api.sock \
+PARARAID_ADAPTER_TOKEN=<your adapter token> \
+PARARAID_SIGNING_SECRET=<hmac secret> \   # omit if signing.mode = none
+bun run examples/reference-adapter/main.ts
+```
+
+This is the loop validated end-to-end against a real `claude` session — a real
+model turn comes back as a signed `turn_replied` the receiver verifies.
