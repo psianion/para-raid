@@ -54,3 +54,7 @@ bun run smoke:integration # FakeTmux flows
 bun run smoke:e2e         # real claude, drives the systemd daemon (~3 min)
 bun run smoke:burn-in     # real claude, leaves a session live for hours
 ```
+
+## Notes
+
+Product roadmap and operator notes are kept in `docs/` — **local-only** (`docs/` is gitignored, so they stay on the operator's box and aren't part of this repo).
