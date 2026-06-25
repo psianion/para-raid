@@ -27,7 +27,6 @@ export type Handler = (req: Request, ctx: HandlerCtx, params: Record<string, str
 export interface Route {
   method: string;
   pattern: RegExp;
-  params: string[];             // names declared in pattern groups (for docs/clarity)
   handler: Handler;
 }
 

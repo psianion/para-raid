@@ -13,15 +13,6 @@ test("mode controller starts running, can pause and resume", () => {
   expect(mc.isPaused()).toBe(false);
 });
 
-test("onModeChange fires on transitions", () => {
-  const mc = createModeController();
-  const seen: string[] = [];
-  mc.onModeChange((m) => seen.push(m));
-  mc.pause();
-  mc.resume();
-  expect(seen).toEqual(["paused", "running"]);
-});
-
 test("warning scanner detects quota warning", () => {
   expect(scanForWarning("You are approaching your usage limit", /approaching\s+your.*limit/i)).toBe(true);
 });

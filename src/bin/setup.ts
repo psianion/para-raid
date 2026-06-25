@@ -54,9 +54,7 @@ WantedBy=default.target
 
 // --- small process helpers (orchestration glue) ---
 async function which(bin: string): Promise<string | null> {
-  const p = Bun.spawn(["which", bin], { stdout: "pipe", stderr: "pipe" });
-  const out = (await new Response(p.stdout).text()).trim();
-  return (await p.exited) === 0 && out ? out : null;
+  return Bun.which(bin);
 }
 async function run(args: string[]): Promise<number> {
   const p = Bun.spawn(args, { stdout: "inherit", stderr: "inherit" });

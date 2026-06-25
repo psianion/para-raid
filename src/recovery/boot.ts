@@ -1,10 +1,10 @@
-import { randomUUID } from "crypto";
 import type { Db } from "../db";
 import type { EventBus } from "../events/bus";
 import type { TmuxAdapter } from "../tmux/adapter";
 import type { Logger } from "../logger";
-import type { ParaRaidConfig, WebhookEventType } from "../types";
+import type { ParaRaidConfig } from "../types";
 import { cleanupWorkdir } from "../workdir";
+import { enqueueWebhook } from "../publisher/enqueue";
 
 export interface BootCtx {
   db: Db;
@@ -59,23 +59,13 @@ export async function reconcileOnBoot(
         `UPDATE sessions SET status = 'recovering', recovery_expires_at = ?, updated_at = ? WHERE id = ?`,
         [expiresAt, now, sess.id],
       );
-      ctx.db.raw.run(
-        `INSERT INTO webhook_queue
-         (event_id, session_id, adapter_id, event_type, payload_json, webhook_url, status, attempt_count, next_attempt_at, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
-        [
-          randomUUID(),
-          sess.id,
-          sess.adapter_id,
-          ("session_recover_candidate" satisfies WebhookEventType),
-          JSON.stringify({ event_type: "session_recover_candidate", session_id: sess.id, recovery_expires_at: expiresAt }),
-          sess.webhook_url,
-          "pending",
-          0,
-          now,
-          now,
-        ],
-      );
+      enqueueWebhook(ctx.db, {
+        eventType: "session_recover_candidate",
+        sessionId: sess.id,
+        adapterId: sess.adapter_id,
+        webhookUrl: sess.webhook_url,
+        payload: { recovery_expires_at: expiresAt },
+      });
       ctx.logger.info("recovery.boot.candidate", {
         session_id: sess.id,
         expires_at: expiresAt,
@@ -91,23 +81,13 @@ export async function reconcileOnBoot(
       } catch {
         // best-effort: workdir may already be gone
       }
-      ctx.db.raw.run(
-        `INSERT INTO webhook_queue
-         (event_id, session_id, adapter_id, event_type, payload_json, webhook_url, status, attempt_count, next_attempt_at, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
-        [
-          randomUUID(),
-          sess.id,
-          sess.adapter_id,
-          ("session_dead" satisfies WebhookEventType),
-          JSON.stringify({ event_type: "session_dead", session_id: sess.id, reason: "tmux_gone_at_boot" }),
-          sess.webhook_url,
-          "pending",
-          0,
-          now,
-          now,
-        ],
-      );
+      enqueueWebhook(ctx.db, {
+        eventType: "session_dead",
+        sessionId: sess.id,
+        adapterId: sess.adapter_id,
+        webhookUrl: sess.webhook_url,
+        payload: { reason: "tmux_gone_at_boot" },
+      });
       ctx.logger.warn("recovery.boot.dead", { session_id: sess.id });
       dead++;
     }

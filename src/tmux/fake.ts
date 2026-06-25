@@ -19,7 +19,6 @@ export function createFakeTmux(): TmuxAdapter & { calls: FakeTmuxCall[]; session
     sessions,
     async newSession(name, cwd, command) { record("newSession", [name, cwd, command]); sessions.add(name); },
     async hasSession(name) { record("hasSession", [name]); return sessions.has(name); },
-    async sendKeys(name, text) { record("sendKeys", [name, text]); },
     async sendKeysLiteral(name, text) { record("sendKeysLiteral", [name, text]); },
     async loadBufferAndPaste(name, text) { record("loadBufferAndPaste", [name, text]); },
     async sendEnter(name) { record("sendEnter", [name]); },

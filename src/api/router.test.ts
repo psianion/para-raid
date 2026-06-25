@@ -7,7 +7,7 @@ const stubCtx = { logger: NOOP_LOGGER } as unknown as HandlerCtx;
 
 test("router dispatches on method + path", async () => {
   const routes: Route[] = [
-    { method: "GET", pattern: /^\/v1\/status$/, params: [], handler: async () => jsonResponse(200, { ok: true }) },
+    { method: "GET", pattern: /^\/v1\/status$/, handler: async () => jsonResponse(200, { ok: true }) },
   ];
   const router = createRouter(routes, stubCtx);
   const res = await router(new Request("http://x/v1/status"));
@@ -29,7 +29,6 @@ test("router extracts dynamic segments via regex groups", async () => {
     {
       method: "GET",
       pattern: /^\/v1\/sessions\/(?<id>[^/]+)$/,
-      params: ["id"],
       handler: async (_req, _ctx, params) => { captured = params; return jsonResponse(200, params); },
     },
   ];
@@ -41,7 +40,7 @@ test("router extracts dynamic segments via regex groups", async () => {
 
 test("router returns 500 on handler throw", async () => {
   const routes: Route[] = [
-    { method: "GET", pattern: /^\/boom$/, params: [], handler: async () => { throw new Error("boom"); } },
+    { method: "GET", pattern: /^\/boom$/, handler: async () => { throw new Error("boom"); } },
   ];
   const router = createRouter(routes, stubCtx);
   const res = await router(new Request("http://x/boom"));

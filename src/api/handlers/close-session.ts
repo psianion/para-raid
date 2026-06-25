@@ -1,9 +1,8 @@
 import { z } from "zod";
-import { randomUUID } from "crypto";
 import { closeSession } from "../../sessions/closer";
 import type { Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
-import type { WebhookEventType } from "../../types";
+import { enqueueWebhook } from "../../publisher/enqueue";
 
 const Req = z.object({ session_id: z.string().uuid() });
 
@@ -25,12 +24,12 @@ export const closeSessionHandler: Handler = async (req, ctx) => {
         await new Promise(r => setTimeout(r, 200));
       }
       ctx.db.raw.run("UPDATE sessions SET status = 'closed', updated_at = ? WHERE id = ?", [Date.now(), parsed.data.session_id]);
-      const eventType: WebhookEventType = "session_closed";
-      ctx.db.raw.run(
-        `INSERT INTO webhook_queue (event_id, session_id, adapter_id, event_type, payload_json, webhook_url, status, attempt_count, next_attempt_at, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
-        [randomUUID(), parsed.data.session_id, sess.adapter_id, eventType, JSON.stringify({ event_type: eventType, session_id: parsed.data.session_id }), sess.webhook_url, "pending", 0, Date.now(), Date.now()]
-      );
+      enqueueWebhook(ctx.db, {
+        eventType: "session_closed",
+        sessionId: parsed.data.session_id,
+        adapterId: sess.adapter_id,
+        webhookUrl: sess.webhook_url,
+      });
     } catch (err) {
       ctx.logger.error("close_session.async_failed", { session_id: parsed.data.session_id, error: String(err) });
     }

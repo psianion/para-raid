@@ -1,30 +1,14 @@
 import { z } from "zod";
-import { randomUUID } from "crypto";
 import { cancelTurn } from "../../sessions/cancel";
 import { findTranscriptForCwd } from "../../transcript/locator";
-import type { Handler, HandlerCtx } from "../router";
+import type { Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
-import type { WebhookEventType } from "../../types";
+import { enqueueWebhook } from "../../publisher/enqueue";
 
 const Req = z.object({
   session_id: z.string().uuid(),
   turn_id: z.string().uuid().optional(),
 });
-
-function enqueueWebhook(
-  ctx: HandlerCtx,
-  eventType: WebhookEventType,
-  sessionId: string,
-  payload: Record<string, unknown>,
-  webhookUrl: string,
-  adapterId: string,
-) {
-  ctx.db.raw.run(
-    `INSERT INTO webhook_queue (event_id, session_id, adapter_id, event_type, payload_json, webhook_url, status, attempt_count, next_attempt_at, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [randomUUID(), sessionId, adapterId, eventType, JSON.stringify({ event_type: eventType, session_id: sessionId, ...payload }), webhookUrl, "pending", 0, Date.now(), Date.now()],
-  );
-}
 
 export const cancelTurnHandler: Handler = async (req, ctx) => {
   const body = await req.json().catch(() => null);
@@ -61,20 +45,19 @@ export const cancelTurnHandler: Handler = async (req, ctx) => {
     );
   }
 
-  enqueueWebhook(
-    ctx,
-    "turn_cancelled",
-    data.session_id,
-    {
+  enqueueWebhook(ctx.db, {
+    eventType: "turn_cancelled",
+    sessionId: data.session_id,
+    adapterId: sess.adapter_id,
+    webhookUrl: sess.webhook_url,
+    payload: {
       session_id: data.session_id,
       turn_id: data.turn_id ?? null,
       cancelled: result.cancelled,
       escalated_to_ctrl_c: result.escalatedToCtrlC,
       partial_text: result.partialText,
     },
-    sess.webhook_url,
-    sess.adapter_id,
-  );
+  });
 
   return jsonResponse(200, {
     cancelled: result.cancelled,

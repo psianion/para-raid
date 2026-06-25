@@ -2,7 +2,6 @@
 export interface TmuxAdapter {
   newSession(name: string, cwd: string, command: string): Promise<void>;
   hasSession(name: string): Promise<boolean>;
-  sendKeys(name: string, text: string): Promise<void>;
   sendKeysLiteral(name: string, text: string): Promise<void>;
   loadBufferAndPaste(name: string, text: string): Promise<void>;
   sendEnter(name: string): Promise<void>;

@@ -1,27 +1,11 @@
 import { z } from "zod";
-import { randomUUID } from "crypto";
-import type { Handler, HandlerCtx } from "../router";
+import type { Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
-import type { WebhookEventType } from "../../types";
+import { enqueueWebhook } from "../../publisher/enqueue";
 
 const Req = z.object({
   session_id: z.string().uuid(),
 });
-
-function enqueueWebhook(
-  ctx: HandlerCtx,
-  eventType: WebhookEventType,
-  sessionId: string,
-  payload: Record<string, unknown>,
-  webhookUrl: string,
-  adapterId: string,
-) {
-  ctx.db.raw.run(
-    `INSERT INTO webhook_queue (event_id, session_id, adapter_id, event_type, payload_json, webhook_url, status, attempt_count, next_attempt_at, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [randomUUID(), sessionId, adapterId, eventType, JSON.stringify({ event_type: eventType, session_id: sessionId, ...payload }), webhookUrl, "pending", 0, Date.now(), Date.now()],
-  );
-}
 
 /**
  * Spawn `claude --resume <session_id>` and wait for exit.
@@ -82,25 +66,23 @@ export const resumeSessionHandler: Handler = async (req, ctx) => {
   const now = Date.now();
   if (succeeded) {
     ctx.db.raw.run("UPDATE sessions SET status = 'live', updated_at = ? WHERE id = ?", [now, data.session_id]);
-    enqueueWebhook(
-      ctx,
-      "session_resumed",
-      data.session_id,
-      { session_id: data.session_id },
-      sess.webhook_url,
-      sess.adapter_id,
-    );
+    enqueueWebhook(ctx.db, {
+      eventType: "session_resumed",
+      sessionId: data.session_id,
+      adapterId: sess.adapter_id,
+      webhookUrl: sess.webhook_url,
+      payload: { session_id: data.session_id },
+    });
     return jsonResponse(200, { session_id: data.session_id, status: "live" });
   }
 
   ctx.db.raw.run("UPDATE sessions SET status = 'dead', updated_at = ? WHERE id = ?", [now, data.session_id]);
-  enqueueWebhook(
-    ctx,
-    "session_dead",
-    data.session_id,
-    { session_id: data.session_id, reason: "resume_failed", error: lastError },
-    sess.webhook_url,
-    sess.adapter_id,
-  );
+  enqueueWebhook(ctx.db, {
+    eventType: "session_dead",
+    sessionId: data.session_id,
+    adapterId: sess.adapter_id,
+    webhookUrl: sess.webhook_url,
+    payload: { session_id: data.session_id, reason: "resume_failed", error: lastError },
+  });
   return jsonResponse(200, { session_id: data.session_id, status: "dead", error: lastError });
 };

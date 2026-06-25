@@ -3,10 +3,10 @@ import { randomUUID, createHash } from "crypto";
 import { provisionWorkdir, acceptClaudeTrust, writeClaudeSettings } from "../../workdir";
 import { renderMcpJson } from "../../bundles/renderer";
 import { launchSession } from "../../sessions/launcher";
-import type { Handler, HandlerCtx } from "../router";
+import type { Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
 import { isSafeWebhookUrl } from "../../publisher/webhook-url";
-import type { WebhookEventType } from "../../types";
+import { enqueueWebhook } from "../../publisher/enqueue";
 
 const Req = z.object({
   adapter_id: z.string().min(1),
@@ -17,18 +17,8 @@ const Req = z.object({
 });
 
 function shortHash(s: string): string {
-  // Deterministic short hash for tmux name. djb2 → base36, 8 chars.
-  let h = 5381;
-  for (const c of s) h = ((h << 5) + h + c.charCodeAt(0)) | 0;
-  return Math.abs(h).toString(36).slice(0, 8);
-}
-
-function enqueueWebhook(ctx: HandlerCtx, eventType: WebhookEventType, sessionId: string, payload: Record<string, unknown>, webhookUrl: string, adapterId: string) {
-  ctx.db.raw.run(
-    `INSERT INTO webhook_queue (event_id, session_id, adapter_id, event_type, payload_json, webhook_url, status, attempt_count, next_attempt_at, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [randomUUID(), sessionId, adapterId, eventType, JSON.stringify({ event_type: eventType, session_id: sessionId, ...payload }), webhookUrl, "pending", 0, Date.now(), Date.now()]
-  );
+  // Deterministic short tmux-name suffix (hex is always a safe tmux name char).
+  return createHash("sha256").update(s).digest("hex").slice(0, 8);
 }
 
 export const openSessionHandler: Handler = async (req, ctx) => {
@@ -44,7 +34,7 @@ export const openSessionHandler: Handler = async (req, ctx) => {
     "SELECT id, cwd FROM sessions WHERE adapter_id = ? AND adapter_ref = ? AND status = 'recovering' LIMIT 1"
   ).get(data.adapter_id, data.adapter_ref) as { id: string; cwd: string } | null;
   if (recov) {
-    enqueueWebhook(ctx, "session_recover_candidate", recov.id, { reason: "open_session_reclaim" }, data.webhook_url, data.adapter_id);
+    enqueueWebhook(ctx.db, { eventType: "session_recover_candidate", sessionId: recov.id, adapterId: data.adapter_id, webhookUrl: data.webhook_url, payload: { reason: "open_session_reclaim" } });
     return jsonResponse(200, { session_id: recov.id, status: "recovering" });
   }
 
@@ -83,7 +73,7 @@ export const openSessionHandler: Handler = async (req, ctx) => {
        VALUES (?,?,?,?,?)`,
       [turnId, sessionId, "pending", promptSha256, now]
     );
-    enqueueWebhook(ctx, "session_open_acknowledged", sessionId, { session_id: sessionId, turn_id: turnId }, data.webhook_url, data.adapter_id);
+    enqueueWebhook(ctx.db, { eventType: "session_open_acknowledged", sessionId, adapterId: data.adapter_id, webhookUrl: data.webhook_url, payload: { session_id: sessionId, turn_id: turnId } });
   });
 
   // Async: launch + dispatch first turn (fire-and-forget)
@@ -94,15 +84,15 @@ export const openSessionHandler: Handler = async (req, ctx) => {
         sessionId, tmuxName, cwd: workdir, timeoutMs: 30_000,
       });
       ctx.db.raw.run("UPDATE sessions SET status = 'live', updated_at = ? WHERE id = ?", [Date.now(), sessionId]);
-      enqueueWebhook(ctx, "session_live", sessionId, { session_id: sessionId }, data.webhook_url, data.adapter_id);
+      enqueueWebhook(ctx.db, { eventType: "session_live", sessionId, adapterId: data.adapter_id, webhookUrl: data.webhook_url, payload: { session_id: sessionId } });
 
       const reply = await ctx.dispatcher.enqueue({ session_id: sessionId, turn_id: turnId, prompt: data.prompt, tmux_session: tmuxName });
       ctx.db.raw.run("UPDATE turns SET status = 'completed', completed_at = ? WHERE id = ?", [Date.now(), turnId]);
-      enqueueWebhook(ctx, "turn_replied", sessionId, { session_id: sessionId, turn_id: turnId, reply }, data.webhook_url, data.adapter_id);
+      enqueueWebhook(ctx.db, { eventType: "turn_replied", sessionId, adapterId: data.adapter_id, webhookUrl: data.webhook_url, payload: { session_id: sessionId, turn_id: turnId, reply } });
     } catch (err) {
       ctx.logger.error("open_session.async_failed", { session_id: sessionId, error: String(err) });
       ctx.db.raw.run("UPDATE sessions SET status = 'dead', updated_at = ? WHERE id = ?", [Date.now(), sessionId]);
-      enqueueWebhook(ctx, "session_dead", sessionId, { reason: "launch_failed", error: String(err) }, data.webhook_url, data.adapter_id);
+      enqueueWebhook(ctx.db, { eventType: "session_dead", sessionId, adapterId: data.adapter_id, webhookUrl: data.webhook_url, payload: { reason: "launch_failed", error: String(err) } });
     }
   })();
 
