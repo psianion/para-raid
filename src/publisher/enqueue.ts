@@ -45,9 +45,8 @@ export function enqueueModeWebhooks(
   eventType: "paused" | "resumed",
 ): void {
   const at = Date.now();
-  const mode = eventType === "paused" ? "paused" : "running";
   for (const [adapterId, cfg] of Object.entries(adapters)) {
     if (!cfg.webhook_url) continue;
-    enqueueWebhook(db, { eventType, sessionId: null, adapterId, webhookUrl: cfg.webhook_url, payload: { mode, at } });
+    enqueueWebhook(db, { eventType, sessionId: null, adapterId, webhookUrl: cfg.webhook_url, payload: { mode: eventType === "paused" ? "paused" : "running", at } });
   }
 }
