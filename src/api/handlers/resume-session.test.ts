@@ -50,6 +50,7 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
     db, bus, tmux, modeController, dispatcher, config,
     logger: NOOP_LOGGER,
     hookEventsPath: `${TMP}/hook-events.jsonl`,
+    adapter_id: "test",
     ...overrides,
   };
 }
@@ -73,7 +74,7 @@ test("resume_session flips to 'live' and emits session_resumed when claude --res
 
   const req = new Request("http://x/v1/resume_session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sid }),
   });
   const res = await resumeSessionHandler(req, ctx, {});
@@ -103,7 +104,7 @@ test("resume_session flips to 'dead' and emits session_dead after 3 spawn failur
 
   const req = new Request("http://x/v1/resume_session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sid }),
   });
   const res = await resumeSessionHandler(req, ctx, {});
@@ -137,11 +138,23 @@ test("resume_session returns 404 session_not_recovering for non-recovering sessi
 
   const req = new Request("http://x/v1/resume_session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sid }),
   });
   const res = await resumeSessionHandler(req, ctx, {});
   expect(res.status).toBe(404);
   const body = await res.json() as any;
   expect(body.error).toBe("session_not_recovering");
+});
+
+test("resume_session returns 403 when a different adapter owns the session", async () => {
+  const ctx = makeCtx({ adapter_id: "intruder" });
+  const sid = "55555555-5555-4555-8555-555555555556";
+  insertRecoveringSession(ctx, sid); // seeded with adapter_id 'test'
+  const req = new Request("http://x/v1/resume_session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sid }),
+  });
+  expect(resumeSessionHandler(req, ctx, {})).rejects.toThrow(/own this session/);
 });

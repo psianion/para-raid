@@ -16,6 +16,7 @@ test("webhook contract is exactly the event types the daemon emits", () => {
     "session_recover_candidate",
     "session_recycled",
     "session_resumed",
+    "tool_call",
     "turn_cancelled",
     "turn_failed",
     "turn_replied",
@@ -24,5 +25,5 @@ test("webhook contract is exactly the event types the daemon emits", () => {
 
 test("webhook contract no longer lists the never-emitted names", () => {
   const set = new Set<string>(WEBHOOK_EVENT_TYPES);
-  for (const dead of ["session_started", "reply", "tool_call"]) expect(set.has(dead)).toBe(false);
+  for (const dead of ["session_started", "reply"]) expect(set.has(dead)).toBe(false);
 });

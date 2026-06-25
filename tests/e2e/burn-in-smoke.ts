@@ -13,6 +13,14 @@ const configPath = process.env.PARARAID_CONFIG ?? join(homedir(), ".config/para-
 const cfg = loadConfig(configPath);
 const SOCKET = cfg.daemon.socket_path;
 
+// Identity is derived from the bearer token. Admin token for daemon-wide reads
+// (status); the "burn-in" adapter's own token for session-owning ops.
+const ADMIN_TOKEN = cfg.auth.token ?? "";
+const ADAPTER_TOKEN = cfg.adapters?.["burn-in"]?.token ?? ADMIN_TOKEN;
+function bearer(token: string): Record<string, string> {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 interface Webhook { event_type: string; session_id: string; payload: any; ts: number }
 const captured: Webhook[] = [];
 const webhookPort = 19500 + Math.floor(Math.random() * 100);
@@ -58,7 +66,7 @@ async function waitFor(predicate: () => boolean, deadlineMs: number, label: stri
 
 async function main() {
   console.log(`[OK] driving daemon at ${SOCKET}`);
-  const status0 = await api("GET", "/v1/status");
+  const status0 = await api("GET", "/v1/status", undefined, bearer(ADMIN_TOKEN));
   if (status0.status !== 200) fail(`daemon not reachable: ${status0.status}`);
   console.log(`[OK] daemon ready, mode=${status0.body.mode}`);
 
@@ -66,7 +74,7 @@ async function main() {
   const ref1 = `burn-in-${Date.now()}`;
   const open = await api("POST", "/v1/open_session",
     { adapter_id: "burn-in", adapter_ref: ref1, prompt: "say hi in one short word", webhook_url: webhookUrl },
-    { "Idempotency-Key": randomUUID(), "X-Adapter-Id": "burn-in" });
+    { "Idempotency-Key": randomUUID(), ...bearer(ADAPTER_TOKEN) });
   if (open.status !== 202) fail(`open expected 202, got ${open.status}: ${JSON.stringify(open.body)}`);
   const sid: string = open.body.session_id;
   console.log(`[OK] open_session ${sid} (status=${open.body.status})`);
@@ -79,7 +87,7 @@ async function main() {
   // STEP 2: send a second turn
   const send = await api("POST", "/v1/send_turn",
     { session_id: sid, prompt: "what is 2+2?" },
-    { "Idempotency-Key": randomUUID(), "X-Adapter-Id": "burn-in" });
+    { "Idempotency-Key": randomUUID(), ...bearer(ADAPTER_TOKEN) });
   if (send.status !== 202) fail(`send expected 202, got ${send.status}: ${JSON.stringify(send.body)}`);
   await waitFor(() =>
     captured.filter(c => c.event_type === "turn_replied" && c.session_id === sid).length >= 2,
@@ -98,7 +106,7 @@ async function main() {
 
   // STEP 3: close
   const close = await api("POST", "/v1/close_session",
-    { session_id: sid }, { "Idempotency-Key": randomUUID(), "X-Adapter-Id": "burn-in" });
+    { session_id: sid }, { "Idempotency-Key": randomUUID(), ...bearer(ADAPTER_TOKEN) });
   if (close.status !== 200) fail(`close expected 200, got ${close.status}: ${JSON.stringify(close.body)}`);
   await waitFor(() => captured.some(c => c.event_type === "session_closed" && c.session_id === sid),
     30_000, "session_closed");

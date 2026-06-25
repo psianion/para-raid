@@ -1,9 +1,10 @@
-import type { Handler } from "../router";
+import { assertAdmin, type Handler } from "../router";
 import { jsonResponse } from "../envelope";
 
 interface StatusRow { status: string; n: number }
 
 export const statusHandler: Handler = async (_req, ctx) => {
+  assertAdmin(ctx);
   const rows = ctx.db.raw.query<StatusRow, []>(
     "SELECT status, COUNT(*) AS n FROM sessions GROUP BY status",
   ).all() as StatusRow[];

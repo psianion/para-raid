@@ -50,6 +50,75 @@ function insertLiveSession(
   );
 }
 
+function insertTurn(
+  ctx: WatchdogCtx,
+  sessionId: string,
+  dispatchedAt: number
+): void {
+  ctx.db.raw.run(
+    `INSERT INTO turns (id, session_id, status, prompt_sha256, created_at, dispatched_at, completed_at)
+     VALUES (?, ?, 'dispatching', 'sha', ?, ?, NULL)`,
+    [`turn-${sessionId}`, sessionId, dispatchedAt, dispatchedAt]
+  );
+}
+
+test("watchdog: reaps live session with a turn stuck dispatching past threshold", async () => {
+  const ctx = makeCtx();
+  const sessionId = "00000000-0000-4000-8000-00000000dddd";
+  const tmuxName = "para-raid-watchdog-stuck";
+  const workdir = `${TMP}/wd-stuck`;
+  mkdirSync(workdir, { recursive: true });
+
+  // tier-0 passes: tmux alive + pid valid.
+  ctx.tmux.sessions.add(tmuxName);
+  insertLiveSession(ctx, sessionId, tmuxName, workdir);
+  insertTurn(ctx, sessionId, Date.now() - 11 * 60_000); // dispatching 11 min ago
+
+  await watchdogTick(ctx);
+
+  const row = ctx.db.raw
+    .query<{ status: string }, [string]>("SELECT status FROM sessions WHERE id = ?")
+    .get(sessionId);
+  expect(row?.status).toBe("dead");
+
+  const events = ctx.db.raw
+    .query<{ event_type: string; payload_json: string }, []>(
+      "SELECT event_type, payload_json FROM webhook_queue"
+    )
+    .all();
+  expect(events).toHaveLength(1);
+  expect(events[0]!.event_type).toBe("session_dead");
+  expect(JSON.parse(events[0]!.payload_json).reason).toBe("stuck_turn");
+
+  expect(existsSync(workdir)).toBe(false);
+});
+
+test("watchdog: leaves live session with a recently-dispatched turn alone", async () => {
+  const ctx = makeCtx();
+  const sessionId = "00000000-0000-4000-8000-00000000eeee";
+  const tmuxName = "para-raid-watchdog-fresh";
+  const workdir = `${TMP}/wd-fresh`;
+  mkdirSync(workdir, { recursive: true });
+
+  ctx.tmux.sessions.add(tmuxName);
+  insertLiveSession(ctx, sessionId, tmuxName, workdir);
+  insertTurn(ctx, sessionId, Date.now() - 2 * 60_000); // dispatching 2 min ago
+
+  await watchdogTick(ctx);
+
+  const row = ctx.db.raw
+    .query<{ status: string }, [string]>("SELECT status FROM sessions WHERE id = ?")
+    .get(sessionId);
+  expect(row?.status).toBe("live");
+
+  const events = ctx.db.raw
+    .query<{ event_type: string }, []>("SELECT event_type FROM webhook_queue")
+    .all();
+  expect(events).toHaveLength(0);
+
+  expect(existsSync(workdir)).toBe(true);
+});
+
 test("watchdog: marks live session as dead when tmux is gone", async () => {
   const ctx = makeCtx();
   const sessionId = "00000000-0000-4000-8000-00000000aaaa";

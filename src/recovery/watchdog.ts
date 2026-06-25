@@ -14,6 +14,9 @@ export interface Watchdog {
   stop: () => void;
 }
 
+// ponytail: matches recovery.grace_window_ms; upgrade path = per-session turn_timeout config.
+const STALE_TURN_THRESHOLD_MS = 10 * 60_000;
+
 interface LiveSessionRow {
   id: string;
   adapter_id: string;
@@ -30,9 +33,39 @@ interface LiveSessionRow {
  * flips the row to `dead`, removes the workdir, and enqueues a `session_dead`
  * webhook with reason `external_kill`.
  *
- * TODO(wave-7): tier-1 transcript scan when tier-0 says alive but session has
- *               been awaiting_stop > 10 min.
+ * Tier-1 (hung-but-alive): for sessions that pass tier-0, a turn stuck in
+ * `dispatching` past STALE_TURN_THRESHOLD_MS is reaped via the same path with
+ * reason `stuck_turn` so adapters can tell it apart from `external_kill`. No
+ * transcript scan — the stale timestamp IS the lack-of-progress signal.
  */
+function reap(
+  ctx: WatchdogCtx,
+  sess: LiveSessionRow,
+  reason: "external_kill" | "stuck_turn"
+): void {
+  ctx.db.raw.run(
+    "UPDATE sessions SET status = 'dead', updated_at = ? WHERE id = ?",
+    [Date.now(), sess.id]
+  );
+  try {
+    rmSync(sess.cwd, { recursive: true, force: true });
+  } catch {
+    // workdir cleanup is best-effort
+  }
+  enqueueWebhook(ctx.db, {
+    eventType: "session_dead",
+    sessionId: sess.id,
+    adapterId: sess.adapter_id,
+    webhookUrl: sess.webhook_url,
+    payload: { reason },
+  });
+  ctx.logger.warn("watchdog.dead", {
+    session_id: sess.id,
+    tmux: sess.tmux_session,
+    reason,
+  });
+}
+
 export async function watchdogTick(ctx: WatchdogCtx): Promise<void> {
   const live = ctx.db.raw
     .query<LiveSessionRow, []>(
@@ -43,31 +76,21 @@ export async function watchdogTick(ctx: WatchdogCtx): Promise<void> {
   for (const sess of live) {
     const tmuxAlive = await ctx.tmux.hasSession(sess.tmux_session);
     const pid = tmuxAlive ? await ctx.tmux.listPanePid(sess.tmux_session) : null;
-    if (tmuxAlive && pid !== null) continue; // healthy
-
-    // Tier-0 fail → mark dead.
-    const now = Date.now();
-    ctx.db.raw.run(
-      "UPDATE sessions SET status = 'dead', updated_at = ? WHERE id = ?",
-      [now, sess.id]
-    );
-    try {
-      rmSync(sess.cwd, { recursive: true, force: true });
-    } catch {
-      // workdir cleanup is best-effort
+    if (!tmuxAlive || pid === null) {
+      reap(ctx, sess, "external_kill"); // tier-0 fail
+      continue;
     }
-    enqueueWebhook(ctx.db, {
-      eventType: "session_dead",
-      sessionId: sess.id,
-      adapterId: sess.adapter_id,
-      webhookUrl: sess.webhook_url,
-      payload: { reason: "external_kill" },
-    });
-    ctx.logger.warn("watchdog.dead", {
-      session_id: sess.id,
-      tmux: sess.tmux_session,
-      reason: "external_kill",
-    });
+
+    // Tier-1: alive but a turn is stuck mid-dispatch with no progress.
+    const stuck = ctx.db.raw
+      .query<{ id: string }, [string, number]>(
+        `SELECT id FROM turns
+          WHERE session_id = ? AND status = 'dispatching' AND completed_at IS NULL
+            AND COALESCE(dispatched_at, created_at) < ?
+          LIMIT 1`
+      )
+      .get(sess.id, Date.now() - STALE_TURN_THRESHOLD_MS);
+    if (stuck) reap(ctx, sess, "stuck_turn");
   }
 }
 

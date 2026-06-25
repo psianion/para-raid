@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { recycleSession } from "../../sessions/recycler";
-import type { Handler } from "../router";
+import { assertOwnership, type Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
 import { enqueueWebhook } from "../../publisher/enqueue";
 
@@ -13,6 +13,7 @@ export const recycleSessionHandler: Handler = async (req, ctx) => {
     "SELECT adapter_id, adapter_ref, tmux_session, cwd, webhook_url, mcp_bundle FROM sessions WHERE id = ? AND status = 'live'"
   ).get(parsed.data.session_id) as any;
   if (!sess) return errorResponse(404, "session_not_live", "no live session with that id", ctx.requestId);
+  assertOwnership(ctx, sess.adapter_id);
 
   if (!ctx.hookEventsPath) {
     ctx.logger.error("recycle_session.no_hook_path", { session_id: parsed.data.session_id });

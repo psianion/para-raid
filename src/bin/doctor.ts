@@ -1,6 +1,7 @@
 import { existsSync, accessSync, constants } from "node:fs";
 import { dirname } from "node:path";
 import { loadConfig } from "../config/loader";
+import { ADMIN_ID } from "../api/router";
 
 export interface DoctorCheck {
   name: string;
@@ -51,7 +52,10 @@ export function parseClaudeAuthStatus(stdout: string, exitOk: boolean): { pass: 
 /** Refuse-to-boot gate for the control-plane auth config — shared by the doctor
  *  check and the daemon boot gate. "none" is acceptable on the owner-only unix
  *  socket; "bearer" demands a real token; "mtls" is not implemented. */
-export function checkAuthSecurity(auth: { mode: "none" | "bearer" | "mtls"; token?: string }): { pass: boolean; msg: string } {
+export function checkAuthSecurity(
+  auth: { mode: "none" | "bearer" | "mtls"; token?: string },
+  adapters?: Record<string, { token?: string }>,
+): { pass: boolean; msg: string } {
   if (auth.mode === "mtls") {
     return { pass: false, msg: "auth.mode 'mtls' is not implemented — use 'bearer' or 'none'" };
   }
@@ -59,6 +63,17 @@ export function checkAuthSecurity(auth: { mode: "none" | "bearer" | "mtls"; toke
     const token = auth.token ?? "";
     if (token.trim().length < 16) {
       return { pass: false, msg: "auth.mode 'bearer' needs auth.token of >= 16 chars — generate one (openssl rand -hex 32)" };
+    }
+    // Each adapter authenticates with its own token, so every per-adapter token
+    // must be as strong as the global one, and no adapter may claim the admin
+    // sentinel id (which would silently grant it daemon-wide access).
+    for (const [id, cfg] of Object.entries(adapters ?? {})) {
+      if (id === ADMIN_ID) {
+        return { pass: false, msg: `adapters.${id} uses the reserved admin id '${ADMIN_ID}' — rename this adapter` };
+      }
+      if ((cfg.token ?? "").trim().length < 16) {
+        return { pass: false, msg: `adapters.${id}.token must be >= 16 chars — generate one (openssl rand -hex 32)` };
+      }
     }
     return { pass: true, msg: "bearer token configured" };
   }

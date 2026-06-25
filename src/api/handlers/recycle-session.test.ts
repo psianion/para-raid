@@ -32,7 +32,7 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
     auth: "none", signing: "none",
     adapters: { test: { webhook_url: "http://x/hook" } },
   } as unknown as ParaRaidConfig;
-  return { db, bus, tmux, modeController, dispatcher, config, logger: NOOP_LOGGER, hookEventsPath: (config.daemon as any).hook_events_path, ...overrides };
+  return { db, bus, tmux, modeController, dispatcher, config, logger: NOOP_LOGGER, hookEventsPath: (config.daemon as any).hook_events_path, adapter_id: "test", ...overrides };
 }
 
 test("recycle_session returns 404 for unknown session", async () => {
@@ -89,4 +89,22 @@ test("recycle_session swaps live row to closed and inserts new live row", async 
   expect(newRow.status).toBe("live");
   const ev = ctx.db.raw.query<{ event_type: string }, []>("SELECT event_type FROM webhook_queue").all();
   expect(ev.map(e => e.event_type)).toContain("session_recycled");
+});
+
+test("recycle_session returns 403 when a different adapter owns the session", async () => {
+  const ctx = makeCtx({ adapter_id: "intruder" });
+  const oldId = "00000000-0000-4000-8000-00000000bbbc";
+  const tmuxName = "para-raid-rcy-acl";
+  (ctx.tmux as any).sessions.add(tmuxName);
+  mkdirSync(`${TMP}/wd`, { recursive: true });
+  ctx.db.raw.run(
+    "INSERT INTO sessions (id, adapter_id, adapter_ref, status, tmux_session, cwd, mcp_bundle, webhook_url, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    [oldId, "test", "ref-rcy", "live", tmuxName, `${TMP}/wd`, "", "http://localhost/webhook", Date.now(), Date.now()]
+  );
+  const req = new Request("http://x/v1/recycle_session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: oldId }),
+  });
+  expect(recycleSessionHandler(req, ctx, {})).rejects.toThrow(/own this session/);
 });

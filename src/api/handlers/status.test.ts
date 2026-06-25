@@ -15,7 +15,7 @@ const TMP = "/tmp/pararaid-w56-status";
 beforeEach(() => { rmSync(TMP, { recursive: true, force: true }); mkdirSync(TMP, { recursive: true }); });
 afterEach(() => { rmSync(TMP, { recursive: true, force: true }); });
 
-function makeCtx(): HandlerCtx {
+function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
   const db = createDb(":memory:");
   const bus = createEventBus();
   const tmux = createFakeTmux();
@@ -23,11 +23,13 @@ function makeCtx(): HandlerCtx {
   const dispatcher = createDispatcher({ maxConcurrentTurns: 3, tmux, onDispatch: async () => "stub" });
   const config = {
     daemon: { socket_path: "/tmp/x.sock", data_dir: TMP },
-    adapters: { test: { webhook_url: "http://x/hook" } },
+    adapters: { test: { webhook_url: "http://x/hook", token: "t1" } },
   } as unknown as ParaRaidConfig;
   return {
     db, bus, tmux, modeController, dispatcher, config,
     logger: NOOP_LOGGER, hookEventsPath: `${TMP}/hook-events.jsonl`,
+    adapter_id: "__admin__",
+    ...overrides,
   };
 }
 
@@ -67,4 +69,10 @@ test("status reports paused mode after pause()", async () => {
   const res = await statusHandler(req, ctx, {});
   const body = await res.json() as any;
   expect(body.mode).toBe("paused");
+});
+
+test("status is admin-only: a regular adapter is rejected with 403", async () => {
+  const ctx = makeCtx({ adapter_id: "test" });
+  const req = new Request("http://x/v1/status", { method: "GET" });
+  expect(statusHandler(req, ctx, {})).rejects.toThrow(/admin token required/);
 });

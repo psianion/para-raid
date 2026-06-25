@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { createHarness, waitFor, type Harness } from "./harness";
+import { createHarness, waitFor, ADMIN_TOKEN, OTHER_ADAPTER_TOKEN, type Harness } from "./harness";
 import { randomUUID } from "node:crypto";
 
 let h: Harness;
@@ -26,7 +26,6 @@ const BODY = (extra: object = {}) => ({
 async function openAndDriveLive(extra: object = {}, body?: { prompt?: string }) {
   const open = await h.api("POST", "/v1/open_session", BODY({ ...extra, ...body }), {
     "Idempotency-Key": KEY(),
-    "X-Adapter-Id": "test",
   });
   const sid: string = open.body.session_id;
   // Launcher subscribes synchronously inside the async open path; nudge a
@@ -63,7 +62,6 @@ describe("Flow 1: open_session lifecycle", () => {
   test("open_session returns 202 and async fires session_live + turn_replied", async () => {
     const open = await h.api("POST", "/v1/open_session", BODY(), {
       "Idempotency-Key": KEY(),
-      "X-Adapter-Id": "test",
     });
     expect(open.status).toBe(202);
     const sid: string = open.body.session_id;
@@ -125,7 +123,7 @@ describe("Flow 2: send_turn on a live session", () => {
       "POST",
       "/v1/send_turn",
       { session_id: sid, prompt: "second" },
-      { "Idempotency-Key": KEY(), "X-Adapter-Id": "test" },
+      { "Idempotency-Key": KEY() },
     );
     expect(send.status).toBe(202);
     expect(send.body.session_id).toBe(sid);
@@ -163,7 +161,7 @@ describe("Flow 3: cancel_turn", () => {
       "POST",
       "/v1/send_turn",
       { session_id: sid, prompt: "do work" },
-      { "Idempotency-Key": KEY(), "X-Adapter-Id": "test" },
+      { "Idempotency-Key": KEY() },
     );
     await waitFor(
       () => h.fakeTmux.calls.filter((c) => c.method === "sendKeysLiteral").length >= 2,
@@ -173,7 +171,7 @@ describe("Flow 3: cancel_turn", () => {
       "POST",
       "/v1/cancel_turn",
       { session_id: sid },
-      { "Idempotency-Key": KEY(), "X-Adapter-Id": "test" },
+      { "Idempotency-Key": KEY() },
     );
     // Emit Stop quickly so cancelTurn observes it and avoids ctrl-c escalation.
     setTimeout(() => {
@@ -203,7 +201,7 @@ describe("Flow 4: close_session", () => {
       "POST",
       "/v1/close_session",
       { session_id: sid },
-      { "Idempotency-Key": KEY(), "X-Adapter-Id": "test" },
+      { "Idempotency-Key": KEY() },
     );
     expect(close.status).toBe(200);
 
@@ -240,7 +238,7 @@ describe("Flow 5: recycle_session", () => {
       "POST",
       "/v1/recycle_session",
       { session_id: sid1 },
-      { "Idempotency-Key": KEY(), "X-Adapter-Id": "test" },
+      { "Idempotency-Key": KEY() },
     );
     setTimeout(() => {
       h.emitHookEvent({ hook_event_name: "SessionEnd" as any, session_id: sid1 });
@@ -291,7 +289,7 @@ describe("Flow 6: reclaim", () => {
       "POST",
       "/v1/open_session",
       BODY({ adapter_ref: ref }),
-      { "Idempotency-Key": KEY(), "X-Adapter-Id": "test" },
+      { "Idempotency-Key": KEY() },
     );
     expect(second.status).toBe(200);
     expect(second.body.session_id).toBe(sid);
@@ -304,6 +302,67 @@ describe("Flow 6: reclaim", () => {
       3_000,
     );
   }, 10_000);
+});
+
+describe("Flow 8: per-adapter identity + ACL", () => {
+  test("missing/invalid bearer token is 401; wrong-owner adapter is 403; admin can; owner can", async () => {
+    // No token at all → 401.
+    const noAuth = await h.api("GET", "/v1/sessions", undefined, { Authorization: "" });
+    expect(noAuth.status).toBe(401);
+
+    // Invalid token → 401.
+    const badAuth = await h.api("GET", "/v1/sessions", undefined, { Authorization: "Bearer not-a-real-token" });
+    expect(badAuth.status).toBe(401);
+
+    // Open a session as the default ("test") adapter.
+    const { sid } = await openAndDriveLive();
+    await waitFor(async () => {
+      const r = await h.api("GET", `/v1/sessions/${sid}`);
+      return r.body.session?.status === "live";
+    });
+
+    // A different authenticated adapter ("other") cannot drive test's session.
+    const intruder = await h.api(
+      "POST", "/v1/send_turn", { session_id: sid, prompt: "mine now" },
+      { "Idempotency-Key": KEY(), Authorization: `Bearer ${OTHER_ADAPTER_TOKEN}` },
+    );
+    expect(intruder.status).toBe(403);
+
+    // Admin may close any session.
+    const adminClose = await h.api(
+      "POST", "/v1/close_session", { session_id: sid },
+      { "Idempotency-Key": KEY(), Authorization: `Bearer ${ADMIN_TOKEN}` },
+    );
+    expect(adminClose.status).toBe(200);
+  }, 15_000);
+
+  test("admin-only ops reject a regular adapter; sessions-list is scoped per adapter", async () => {
+    // status requires admin → 403 for the default adapter token.
+    const statusAsAdapter = await h.api("GET", "/v1/status");
+    expect(statusAsAdapter.status).toBe(403);
+    const statusAsAdmin = await h.api("GET", "/v1/status", undefined, { Authorization: `Bearer ${ADMIN_TOKEN}` });
+    expect(statusAsAdmin.status).toBe(200);
+
+    // Seed one session for each adapter.
+    const now = Date.now();
+    for (const [id, sid] of [["test", randomUUID()], ["other", randomUUID()]] as const) {
+      h.db.raw.run(
+        `INSERT INTO sessions (id, adapter_id, adapter_ref, status, tmux_session, cwd, mcp_bundle, webhook_url, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        [sid, id, `ref-${id}`, "live", `tmx-${id}`, `/tmp/cwd-${id}`, "", h.webhookUrl, now, now],
+      );
+    }
+    // Default adapter ("test") only sees its own row even though it asks for all.
+    const scoped = await h.api("GET", "/v1/sessions");
+    expect(scoped.body.sessions.every((s: any) => s.adapter_id === "test")).toBe(true);
+    expect(scoped.body.sessions.some((s: any) => s.adapter_id === "other")).toBe(false);
+
+    // Admin sees both.
+    const all = await h.api("GET", "/v1/sessions", undefined, { Authorization: `Bearer ${ADMIN_TOKEN}` });
+    const ids = new Set(all.body.sessions.map((s: any) => s.adapter_id));
+    expect(ids.has("test")).toBe(true);
+    expect(ids.has("other")).toBe(true);
+  });
 });
 
 describe("Flow 7: limit/quota warning -> pause", () => {

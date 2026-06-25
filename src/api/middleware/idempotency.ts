@@ -8,7 +8,10 @@ export function withIdempotencyMiddleware(handler: Handler): Handler {
     const key = req.headers.get("Idempotency-Key");
     if (!key) return handler(req, ctx, params);
 
-    const adapterId = req.headers.get("X-Adapter-Id") ?? "unknown";
+    // Scope by the authenticated identity (auth middleware runs first), not a
+    // spoofable header. Falls back to "unknown" only when auth is off (mode
+    // "none" actually sets ADMIN_ID, so this is belt-and-suspenders).
+    const adapterId = ctx.adapter_id ?? "unknown";
     const endpoint = new URL(req.url).pathname;
 
     const existing = ctx.db.raw.query<{ response_status: number; response_json: string }, [string, string, string, number]>(

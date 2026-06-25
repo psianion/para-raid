@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { randomUUID, createHash } from "crypto";
-import type { Handler } from "../router";
+import { assertOwnership, type Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
 import { enqueueWebhook } from "../../publisher/enqueue";
 import { getLastAssistantText } from "../../transcript/reader";
@@ -45,6 +45,7 @@ export const sendTurnHandler: Handler = async (req, ctx) => {
     "SELECT adapter_id, tmux_session, cwd, webhook_url FROM sessions WHERE id = ? AND status = 'live'",
   ).get(data.session_id) as { adapter_id: string; tmux_session: string; cwd: string; webhook_url: string } | null;
   if (!sess) return errorResponse(404, "session_not_live", "no live session with that id", ctx.requestId);
+  assertOwnership(ctx, sess.adapter_id);
 
   const turnId = randomUUID();
   const promptSha256 = createHash("sha256").update(data.prompt).digest("hex");

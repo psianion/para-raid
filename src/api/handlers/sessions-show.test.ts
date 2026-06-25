@@ -15,7 +15,7 @@ const TMP = "/tmp/pararaid-w56-sessshow";
 beforeEach(() => { rmSync(TMP, { recursive: true, force: true }); mkdirSync(TMP, { recursive: true }); });
 afterEach(() => { rmSync(TMP, { recursive: true, force: true }); });
 
-function makeCtx(): HandlerCtx {
+function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
   const db = createDb(":memory:");
   const bus = createEventBus();
   const tmux = createFakeTmux();
@@ -25,7 +25,18 @@ function makeCtx(): HandlerCtx {
   return {
     db, bus, tmux, modeController, dispatcher, config,
     logger: NOOP_LOGGER, hookEventsPath: `${TMP}/hook-events.jsonl`,
+    adapter_id: "test", // owner of the seeded session in these tests
+    ...overrides,
   };
+}
+
+function seedSession(ctx: HandlerCtx, sid: string): void {
+  const now = Date.now();
+  ctx.db.raw.run(
+    `INSERT INTO sessions (id, adapter_id, adapter_ref, status, tmux_session, cwd, mcp_bundle, webhook_url, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    [sid, "test", "ref-1", "live", "tmx-1", `${TMP}/nope-${sid}`, "", "http://x/hook", now, now],
+  );
 }
 
 test("sessions_show returns the session, latest_turn, and transcript_path (null when no transcript)", async () => {
@@ -62,4 +73,23 @@ test("sessions_show returns 404 not_found for unknown id", async () => {
   expect(res.status).toBe(404);
   const body = await res.json() as any;
   expect(body.error).toBe("not_found");
+});
+
+test("sessions_show forbids a different adapter from reading the session", async () => {
+  const ctx = makeCtx({ adapter_id: "intruder" });
+  const sid = "22222222-2222-4222-8222-222222222222";
+  seedSession(ctx, sid); // owned by adapter 'test'
+  const req = new Request(`http://x/v1/sessions/${sid}`, { method: "GET" });
+  expect(sessionsShowHandler(req, ctx, { id: sid })).rejects.toThrow(/own this session/);
+});
+
+test("sessions_show allows admin to read any session", async () => {
+  const ctx = makeCtx({ adapter_id: "__admin__" });
+  const sid = "33333333-3333-4333-8333-333333333333";
+  seedSession(ctx, sid);
+  const req = new Request(`http://x/v1/sessions/${sid}`, { method: "GET" });
+  const res = await sessionsShowHandler(req, ctx, { id: sid });
+  expect(res.status).toBe(200);
+  const body = await res.json() as any;
+  expect(body.session.id).toBe(sid);
 });

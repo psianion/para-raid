@@ -1,4 +1,4 @@
-import type { Handler } from "../router";
+import { assertOwnership, type Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
 import { findTranscriptForCwd } from "../../transcript/locator";
 
@@ -38,6 +38,7 @@ export const sessionsShowHandler: Handler = async (_req, ctx, params) => {
      FROM sessions WHERE id = ?`,
   ).get(id) as SessionRow | null;
   if (!sess) return errorResponse(404, "not_found", "no session with that id", ctx.requestId);
+  assertOwnership(ctx, sess.adapter_id);
 
   const latestTurn = ctx.db.raw.query<TurnRow, [string]>(
     `SELECT id, session_id, status, prompt_sha256, created_at, dispatched_at, completed_at, error

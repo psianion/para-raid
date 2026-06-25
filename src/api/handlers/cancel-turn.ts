@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { cancelTurn } from "../../sessions/cancel";
 import { findTranscriptForCwd } from "../../transcript/locator";
-import type { Handler } from "../router";
+import { assertOwnership, type Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
 import { enqueueWebhook } from "../../publisher/enqueue";
 
@@ -23,6 +23,7 @@ export const cancelTurnHandler: Handler = async (req, ctx) => {
     "SELECT adapter_id, tmux_session, cwd, webhook_url FROM sessions WHERE id = ? AND status = 'live'",
   ).get(data.session_id) as { adapter_id: string; tmux_session: string; cwd: string; webhook_url: string } | null;
   if (!sess) return errorResponse(404, "session_not_live", "no live session with that id", ctx.requestId);
+  assertOwnership(ctx, sess.adapter_id);
 
   // Look up transcript via the same encoded-cwd helper the smoke uses.
   // findTranscriptForCwd may return null (no transcript file yet); cancelTurn

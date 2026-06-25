@@ -1,4 +1,4 @@
-import type { Handler } from "../router";
+import { ADMIN_ID, type Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
 
 interface SessionRow {
@@ -19,7 +19,11 @@ const MAX_LIMIT = 200;
 
 export const sessionsListHandler: Handler = async (req, ctx) => {
   const url = new URL(req.url);
-  const adapterId = url.searchParams.get("adapter_id");
+  // Admin may filter by any adapter_id (or none); a regular adapter is forced
+  // to its own rows regardless of the query param.
+  const adapterId = ctx.adapter_id === ADMIN_ID
+    ? url.searchParams.get("adapter_id")
+    : (ctx.adapter_id ?? null);
   const status = url.searchParams.get("status");
   const limitRaw = url.searchParams.get("limit");
   const cursorRaw = url.searchParams.get("cursor");

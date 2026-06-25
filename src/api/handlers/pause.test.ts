@@ -23,11 +23,12 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
   const dispatcher = createDispatcher({ maxConcurrentTurns: 3, tmux, onDispatch: async () => "stub" });
   const config = {
     daemon: { socket_path: "/tmp/x.sock", data_dir: TMP },
-    adapters: { test: { webhook_url: "http://x/hook" }, other: { webhook_url: "http://y/hook" } },
+    adapters: { test: { webhook_url: "http://x/hook", token: "t1" }, other: { webhook_url: "http://y/hook", token: "t2" } },
   } as unknown as ParaRaidConfig;
   return {
     db, bus, tmux, modeController, dispatcher, config,
     logger: NOOP_LOGGER, hookEventsPath: `${TMP}/hook-events.jsonl`,
+    adapter_id: "__admin__",
     ...overrides,
   };
 }
@@ -35,7 +36,7 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
 test("pause flips mode to paused and returns { mode: paused }", async () => {
   const ctx = makeCtx();
   expect(ctx.modeController.isPaused()).toBe(false);
-  const req = new Request("http://x/v1/pause", { method: "POST", headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" }, body: "{}" });
+  const req = new Request("http://x/v1/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   const res = await pauseHandler(req, ctx, {});
   expect(res.status).toBe(200);
   const body = await res.json() as any;
@@ -52,12 +53,19 @@ test("pause flips mode to paused and returns { mode: paused }", async () => {
 
 test("pause is idempotent: second call does not enqueue duplicate webhooks", async () => {
   const ctx = makeCtx();
-  const req1 = new Request("http://x/v1/pause", { method: "POST", headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" }, body: "{}" });
-  const req2 = new Request("http://x/v1/pause", { method: "POST", headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" }, body: "{}" });
+  const req1 = new Request("http://x/v1/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  const req2 = new Request("http://x/v1/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   await pauseHandler(req1, ctx, {});
   await pauseHandler(req2, ctx, {});
   const n = ctx.db.raw.query<{ n: number }, []>(
     "SELECT COUNT(*) AS n FROM webhook_queue WHERE event_type = 'paused'",
   ).get() as { n: number };
   expect(n.n).toBe(2); // 2 adapters once, not 4
+});
+
+test("pause is admin-only: a regular adapter is rejected with 403", async () => {
+  const ctx = makeCtx({ adapter_id: "test" });
+  const req = new Request("http://x/v1/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  expect(pauseHandler(req, ctx, {})).rejects.toThrow(/admin token required/);
+  expect(ctx.modeController.isPaused()).toBe(false);
 });

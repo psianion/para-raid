@@ -21,6 +21,8 @@ import { createRouter } from "./api/router";
 import { routes } from "./api/routes";
 import { createLogger } from "./logger";
 import { runTurn } from "./sessions/turn-runner";
+import { enqueueWebhook } from "./publisher/enqueue";
+import type { HookEvent } from "./types";
 
 async function main() {
   const log = createLogger();
@@ -42,7 +44,7 @@ async function main() {
 
   // Secure-by-default: refuse to boot on an insecure auth config (bearer with no
   // real token, or the unimplemented mtls mode) rather than serve unprotected.
-  const sec = checkAuthSecurity(config.auth);
+  const sec = checkAuthSecurity(config.auth, config.adapters);
   if (!sec.pass) {
     log.error("daemon.boot.fail", { reason: "insecure_auth_config", detail: sec.msg });
     process.exit(1);
@@ -82,6 +84,24 @@ async function main() {
   await reconcileOnBoot(ctx);
 
   const tailer = startTailer(hookEventsPath, db, bus);
+
+  // Fire a `tool_call` webhook for every PreToolUse hook event, so adapters can
+  // observe (not gate) each tool the session is about to run.
+  bus.subscribe((event: HookEvent) => {
+    if (event.hook_event_name !== "PreToolUse" || !event.session_id) return;
+    const row = db.raw.query<{ adapter_id: string; webhook_url: string }, [string]>(
+      "SELECT adapter_id, webhook_url FROM sessions WHERE id = ?",
+    ).get(event.session_id) as { adapter_id: string; webhook_url: string } | null;
+    if (!row || !row.webhook_url) return;
+    enqueueWebhook(db, {
+      eventType: "tool_call",
+      sessionId: event.session_id,
+      adapterId: row.adapter_id,
+      webhookUrl: row.webhook_url,
+      payload: { tool_name: event.tool_name, tool_input: event.tool_input },
+    });
+  });
+
   const publisher = startPublisher(db, config.publisher, log, config.signing);
   const grace = startGraceTimer(ctx, 1_000);
   const watchdog = startWatchdog(ctx, 5_000);
