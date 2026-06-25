@@ -15,16 +15,18 @@ const TMP = "/tmp/pararaid-w56-deadletters";
 beforeEach(() => { rmSync(TMP, { recursive: true, force: true }); mkdirSync(TMP, { recursive: true }); });
 afterEach(() => { rmSync(TMP, { recursive: true, force: true }); });
 
-function makeCtx(): HandlerCtx {
+function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
   const db = createDb(":memory:");
   const bus = createEventBus();
   const tmux = createFakeTmux();
   const modeController = createModeController();
   const dispatcher = createDispatcher({ maxConcurrentTurns: 3, tmux, onDispatch: async () => "stub" });
-  const config = { daemon: { socket_path: "/tmp/x.sock", data_dir: TMP }, adapters: { test: { webhook_url: "http://x/hook" } } } as unknown as ParaRaidConfig;
+  const config = { daemon: { socket_path: "/tmp/x.sock", data_dir: TMP }, adapters: { test: { webhook_url: "http://x/hook", token: "t1" } } } as unknown as ParaRaidConfig;
   return {
     db, bus, tmux, modeController, dispatcher, config,
     logger: NOOP_LOGGER, hookEventsPath: `${TMP}/hook-events.jsonl`,
+    adapter_id: "__admin__",
+    ...overrides,
   };
 }
 
@@ -64,7 +66,7 @@ test("dead_letters_ack flips dead_letter rows to delivered for the given event_i
 
   const req = new Request("http://x/v1/dead_letters/ack", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ event_ids: ["e1", "e2", "e3"] }),
   });
   const res = await deadLettersAckHandler(req, ctx, {});
@@ -86,11 +88,45 @@ test("dead_letters_ack returns 400 invalid_request when event_ids missing", asyn
   const ctx = makeCtx();
   const req = new Request("http://x/v1/dead_letters/ack", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
   });
   const res = await deadLettersAckHandler(req, ctx, {});
   expect(res.status).toBe(400);
   const body = await res.json() as any;
   expect(body.error).toBe("invalid_request");
+});
+
+test("dead_letters_list scopes a regular adapter to its own rows (ignores query param)", async () => {
+  const ctx = makeCtx({ adapter_id: "test" });
+  insertEvent(ctx, "e1", "test",  "dead_letter", 1000);
+  insertEvent(ctx, "e2", "other", "dead_letter", 2000);
+
+  // Caller asks for 'other' but only sees its own ('test').
+  const req = new Request("http://x/v1/dead_letters?adapter_id=other", { method: "GET" });
+  const res = await deadLettersListHandler(req, ctx, {});
+  const body = await res.json() as any;
+  expect(body.dead_letters.map((r: any) => r.event_id)).toEqual(["e1"]);
+});
+
+test("dead_letters_ack only acks the caller's own rows when not admin", async () => {
+  const ctx = makeCtx({ adapter_id: "test" });
+  insertEvent(ctx, "e1", "test",  "dead_letter", 1000);
+  insertEvent(ctx, "e2", "other", "dead_letter", 2000); // foreign — must NOT be acked
+
+  const req = new Request("http://x/v1/dead_letters/ack", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event_ids: ["e1", "e2"] }),
+  });
+  const res = await deadLettersAckHandler(req, ctx, {});
+  const body = await res.json() as any;
+  expect(body.acknowledged).toBe(1); // only e1
+
+  const map: Record<string, string> = {};
+  for (const r of ctx.db.raw.query<{ event_id: string; status: string }, []>(
+    "SELECT event_id, status FROM webhook_queue",
+  ).all() as Array<{ event_id: string; status: string }>) map[r.event_id] = r.status;
+  expect(map.e1).toBe("delivered");
+  expect(map.e2).toBe("dead_letter");
 });

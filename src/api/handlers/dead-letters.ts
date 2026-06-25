@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Handler } from "../router";
+import { ADMIN_ID, type Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
 
 interface DeadLetterRow {
@@ -20,7 +20,11 @@ interface DeadLetterRow {
 
 export const deadLettersListHandler: Handler = async (req, ctx) => {
   const url = new URL(req.url);
-  const adapterId = url.searchParams.get("adapter_id");
+  // Admin may filter by any adapter_id (or none); a regular adapter only ever
+  // sees its own dead letters regardless of the query param.
+  const adapterId = ctx.adapter_id === ADMIN_ID
+    ? url.searchParams.get("adapter_id")
+    : (ctx.adapter_id ?? null);
 
   const sql = adapterId
     ? `SELECT id, event_id, session_id, adapter_id, event_type, payload_json, webhook_url,
@@ -48,10 +52,16 @@ export const deadLettersAckHandler: Handler = async (req, ctx) => {
 
   const ids = parsed.data.event_ids;
   const placeholders = ids.map(() => "?").join(",");
+  // A regular adapter may only ack its own dead letters; admin acks anything.
+  // Scoping the UPDATE (rather than rejecting) means a partial-foreign batch
+  // still acks the rows the caller owns.
+  const isAdmin = ctx.adapter_id === ADMIN_ID;
+  const scopeSql = isAdmin ? "" : " AND adapter_id = ?";
+  const scopeArgs = isAdmin ? ids : [...ids, ctx.adapter_id ?? ""];
   const result = ctx.db.raw.run(
     `UPDATE webhook_queue SET status = 'delivered'
-     WHERE status = 'dead_letter' AND event_id IN (${placeholders})`,
-    ids,
+     WHERE status = 'dead_letter' AND event_id IN (${placeholders})${scopeSql}`,
+    scopeArgs,
   );
 
   return jsonResponse(200, { acknowledged: result.changes });

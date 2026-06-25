@@ -31,27 +31,16 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
     publisher: { retry_window_ms: 600_000, backoff_ms: [1000] },
     limit: { warning_regex: "approaching" },
     auth: "none", signing: "none",
-    adapters: { test: { webhook_url: "http://x/hook" } },
+    adapters: { test: { webhook_url: "http://x/hook", token: "tkn-test" } },
   } as unknown as ParaRaidConfig;
-  return { db, bus, tmux, modeController, dispatcher, config, logger: NOOP_LOGGER, hookEventsPath: (config.daemon as any).hook_events_path, ...overrides };
+  return { db, bus, tmux, modeController, dispatcher, config, logger: NOOP_LOGGER, hookEventsPath: (config.daemon as any).hook_events_path, adapter_id: "test", ...overrides };
 }
-
-test("open_session rejects a blocked webhook_url with 400", async () => {
-  const ctx = makeCtx();
-  const req = new Request("http://x/v1/open_session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
-    body: JSON.stringify({ adapter_id: "test", adapter_ref: "ref-ssrf", prompt: "hi", webhook_url: "http://169.254.169.254/latest/meta-data/" }),
-  });
-  const res = await openSessionHandler(req, ctx, {});
-  expect(res.status).toBe(400);
-});
 
 test("open_session inserts rows and returns 202", async () => {
   const ctx = makeCtx();
   const req = new Request("http://x/v1/open_session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ adapter_id: "test", adapter_ref: "ref-1", prompt: "say hi", webhook_url: "http://x/hook" }),
   });
   const res = await openSessionHandler(req, ctx, {});
@@ -72,7 +61,7 @@ test("open_session renders .mcp.json for the requested bundle", async () => {
   } as Partial<HandlerCtx>);
   const req = new Request("http://x/v1/open_session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ adapter_id: "test", adapter_ref: "ref-mcp", prompt: "hi", webhook_url: "http://x/h", bundle_name: "scrypt" }),
   });
   const res = await openSessionHandler(req, ctx, {});
@@ -88,7 +77,7 @@ test("open_session returns 400 for an unknown bundle", async () => {
   const ctx = makeCtx({ bundles: [] } as Partial<HandlerCtx>);
   const req = new Request("http://x/v1/open_session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ adapter_id: "test", adapter_ref: "ref-x", prompt: "hi", webhook_url: "http://x/h", bundle_name: "nope" }),
   });
   const res = await openSessionHandler(req, ctx, {});
@@ -101,7 +90,7 @@ test("open_session returns 503 paused when mode is paused", async () => {
   ctx.modeController.pause();
   const req = new Request("http://x/v1/open_session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ adapter_id: "test", adapter_ref: "ref-1", prompt: "x", webhook_url: "http://x/h" }),
   });
   const res = await openSessionHandler(req, ctx, {});
@@ -120,7 +109,7 @@ test("open_session returns 429 pool_full at max_total_sessions", async () => {
   }
   const req = new Request("http://x/v1/open_session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ adapter_id: "test", adapter_ref: "ref-new", prompt: "x", webhook_url: "http://x/h" }),
   });
   const res = await openSessionHandler(req, ctx, {});
@@ -135,7 +124,7 @@ test("open_session reclaims a recovering session for same adapter_ref", async ()
   );
   const req = new Request("http://x/v1/open_session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ adapter_id: "test", adapter_ref: "ref-recov", prompt: "x", webhook_url: "http://x/h" }),
   });
   const res = await openSessionHandler(req, ctx, {});
@@ -143,4 +132,35 @@ test("open_session reclaims a recovering session for same adapter_ref", async ()
   const body = await res.json() as any;
   expect(body.session_id).toBe("existing-id");
   expect(body.status).toBe("recovering");
+});
+
+test("open_session returns 403 for the admin identity (admin does not own sessions)", async () => {
+  const ctx = makeCtx({ adapter_id: "__admin__" });
+  const req = new Request("http://x/v1/open_session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ adapter_ref: "ref-admin", prompt: "hi" }),
+  });
+  const res = await openSessionHandler(req, ctx, {});
+  expect(res.status).toBe(403);
+});
+
+test("open_session uses the authenticated identity + config webhook_url, ignoring the body adapter_id", async () => {
+  const ctx = makeCtx({ adapter_id: "test" });
+  const req = new Request("http://x/v1/open_session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // body claims a different adapter_id and an SSRF webhook_url — both ignored.
+    // The webhook target is the adapter's config value, so the body can't point
+    // it at an internal address (SSRF-via-body is structurally impossible now).
+    body: JSON.stringify({ adapter_id: "spoofed", adapter_ref: "ref-id", prompt: "hi", webhook_url: "http://169.254.169.254/latest/meta-data/" }),
+  });
+  const res = await openSessionHandler(req, ctx, {});
+  expect(res.status).toBe(202);
+  const body = await res.json() as any;
+  const sess = ctx.db.raw.query<{ adapter_id: string; webhook_url: string }, [string]>(
+    "SELECT adapter_id, webhook_url FROM sessions WHERE id = ?",
+  ).get(body.session_id)!;
+  expect(sess.adapter_id).toBe("test");
+  expect(sess.webhook_url).toBe("http://x/hook");
 });

@@ -49,6 +49,7 @@ export const WEBHOOK_EVENT_TYPES = [
   "session_recycled",
   "session_closed",
   "session_resumed",
+  "tool_call",
   "paused",
   "resumed",
 ] as const;
@@ -125,7 +126,7 @@ export interface ParaRaidConfig {
   observability: { ram_warn_pct: number; ram_refuse_pct: number; stats_interval_ms: number };
   auth: { mode: "none" | "bearer" | "mtls"; token?: string };
   signing: { mode: "none" | "hmac"; secret?: string };
-  adapters: Record<string, { webhook_url: string }>;
+  adapters: Record<string, { webhook_url: string; token: string }>;
 }
 
 // --- API ---

@@ -39,7 +39,8 @@ stats_interval_ms = 30000
 
 [auth]
 mode = "none"   # "none" | "bearer" | "mtls". install.sh flips this to "bearer".
-token = ""      # bearer secret; install.sh generates one. Keep this file private.
+token = ""      # GLOBAL/ADMIN bearer secret; install.sh generates one. Grants daemon-wide
+                # access (pause/resume, stats, status, all sessions). Keep this file private.
 
 [signing]
 mode = "none"   # "none" | "hmac". install.sh flips this to "hmac".
@@ -47,3 +48,7 @@ secret = ""     # hmac secret; install.sh generates one. Keep this file private.
 
 [adapters.uxie]
 webhook_url = "http://localhost/api/webhooks/para-raid"
+# Per-adapter bearer secret (REQUIRED, non-empty). The daemon derives caller
+# identity SOLELY from this token, so each adapter MUST have its own. Generate
+# one per adapter (e.g. `openssl rand -hex 32`) and keep this file private.
+token = "replace-with-a-unique-per-adapter-secret"

@@ -24,7 +24,7 @@ afterEach(() => {
   __statsHooks.pidFor   = ORIG_PID;
 });
 
-function makeCtx(): HandlerCtx {
+function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
   const db = createDb(":memory:");
   const bus = createEventBus();
   const tmux = createFakeTmux();
@@ -34,6 +34,8 @@ function makeCtx(): HandlerCtx {
   return {
     db, bus, tmux, modeController, dispatcher, config,
     logger: NOOP_LOGGER, hookEventsPath: `${TMP}/hook-events.jsonl`,
+    adapter_id: "__admin__",
+    ...overrides,
   };
 }
 
@@ -85,4 +87,10 @@ test("stats tolerates missing pid / spawn failure (returns null fields, not 500)
   expect(body.sessions[0].rss_mb).toBeNull();
   expect(body.sessions[0].workdir_bytes).toBeNull();
   expect(body.total_session_rss_mb).toBe(0);
+});
+
+test("stats is admin-only: a regular adapter is rejected with 403", async () => {
+  const ctx = makeCtx({ adapter_id: "test" });
+  const req = new Request("http://x/v1/stats", { method: "GET" });
+  expect(statsHandler(req, ctx, {})).rejects.toThrow(/admin token required/);
 });

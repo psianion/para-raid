@@ -46,6 +46,7 @@ test("writeClaudeSettings creates valid hook config", () => {
   expect(j.hooks.Stop[0].hooks[0].command).toContain("Stop");
   expect(j.hooks.Stop[0].hooks[0].command).toContain("para-1");
   expect(j.hooks.SessionEnd[0].hooks[0].command).toContain("SessionEnd");
+  expect(j.hooks.PreToolUse[0].hooks[0].command).toContain("PreToolUse");
 });
 
 test("hook command produces parseable JSON when run", async () => {

@@ -1,4 +1,4 @@
-import type { Handler } from "../router";
+import { assertAdmin, type Handler } from "../router";
 import { jsonResponse } from "../envelope";
 
 interface SessionRow { id: string; adapter_id: string; cwd: string; status: string }
@@ -43,6 +43,7 @@ export const __statsHooks: {
 };
 
 export const statsHandler: Handler = async (_req, ctx) => {
+  assertAdmin(ctx);
   const rows = ctx.db.raw.query<SessionRow, []>(
     "SELECT id, adapter_id, cwd, status FROM sessions WHERE status IN ('live','launching','recovering')",
   ).all() as SessionRow[];

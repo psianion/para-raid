@@ -38,6 +38,7 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
     db, bus, tmux, modeController, dispatcher, config,
     logger: NOOP_LOGGER,
     hookEventsPath: `${TMP}/hook-events.jsonl`,
+    adapter_id: "test",
     ...overrides,
   };
 }
@@ -58,7 +59,7 @@ test("send_turn returns 202, INSERTs a turns row, and enqueues turn_replied", as
 
   const req = new Request("http://x/v1/send_turn", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sid, prompt: "hello" }),
   });
   const res = await sendTurnHandler(req, ctx, {});
@@ -98,11 +99,36 @@ test("send_turn returns 404 session_not_live for unknown or non-live sessions", 
 
   const req = new Request("http://x/v1/send_turn", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: closedId, prompt: "hi" }),
   });
   const res = await sendTurnHandler(req, ctx, {});
   expect(res.status).toBe(404);
   const body = await res.json() as any;
   expect(body.error).toBe("session_not_live");
+});
+
+test("send_turn returns 403 when a different adapter tries to drive the session", async () => {
+  const ctx = makeCtx({ adapter_id: "intruder" });
+  const sid = "11111111-1111-4111-8111-111111111112";
+  insertLiveSession(ctx, sid); // seeded with adapter_id 'test'
+  const req = new Request("http://x/v1/send_turn", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sid, prompt: "mine now" }),
+  });
+  expect(sendTurnHandler(req, ctx, {})).rejects.toThrow(/own this session/);
+});
+
+test("send_turn allows admin to drive any session", async () => {
+  const ctx = makeCtx({ adapter_id: "__admin__" });
+  const sid = "11111111-1111-4111-8111-111111111113";
+  insertLiveSession(ctx, sid);
+  const req = new Request("http://x/v1/send_turn", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sid, prompt: "admin turn" }),
+  });
+  const res = await sendTurnHandler(req, ctx, {});
+  expect(res.status).toBe(202);
 });

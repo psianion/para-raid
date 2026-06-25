@@ -29,7 +29,7 @@ Health:
   dead-letters ack --event-id <id>
 
 Advanced — your adapter normally drives these over the socket; you rarely type them:
-  open-session  --adapter-id X --adapter-ref Y --prompt "..." [--bundle B] [--webhook URL]
+  open-session  --adapter-id X --adapter-ref Y --prompt "..." [--bundle B]
   send-turn     --id <session-id> --prompt "..."
   cancel-turn   --id <session-id>
   close-session --id <session-id>
@@ -95,14 +95,14 @@ export function authHeader(token: string): Record<string, string> {
 }
 let authToken = "";
 
-async function apiCall(socket: string, method: "GET" | "POST", path: string, body?: any, idempotencyKey?: string, adapterId?: string): Promise<ApiResult> {
+async function apiCall(socket: string, method: "GET" | "POST", path: string, body?: any, idempotencyKey?: string, token?: string): Promise<ApiResult> {
   const init: any = {
     method,
     headers: {
       "Content-Type": "application/json",
-      ...authHeader(authToken),
+      // Identity is derived from the bearer token alone — no X-Adapter-Id.
+      ...authHeader(token ?? authToken),
       ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
-      ...(adapterId ? { "X-Adapter-Id": adapterId } : {}),
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     unix: socket,
@@ -189,6 +189,11 @@ async function main() {
   const socket = cfg.daemon.socket_path;
   const adapterId = typeof args.flags["adapter-id"] === "string" ? args.flags["adapter-id"] as string : "cli";
 
+  // Session-owning ops authenticate as the named adapter (its per-adapter
+  // token); fall back to the admin token when the adapter isn't in config
+  // (e.g. local owner driving by hand). Admin ops just use authToken.
+  const adapterToken = (id: string): string => cfg.adapters?.[id]?.token ?? authToken;
+
   const newKey = () => randomUUID();
 
   switch (args.subcommand) {
@@ -205,12 +210,12 @@ async function main() {
     }
     case "pause": {
       const reason = typeof args.flags.reason === "string" ? args.flags.reason : "manual";
-      const r = await apiCall(socket, "POST", "/v1/pause", { reason }, newKey(), adapterId);
+      const r = await apiCall(socket, "POST", "/v1/pause", { reason }, newKey());
       printJsonOrFormatted(asJson, r.body, `pause: ${r.status}`);
       exitForStatus(r.status);
     }
     case "resume": {
-      const r = await apiCall(socket, "POST", "/v1/resume", {}, newKey(), adapterId);
+      const r = await apiCall(socket, "POST", "/v1/resume", {}, newKey());
       printJsonOrFormatted(asJson, r.body, `resume: ${r.status}`);
       exitForStatus(r.status);
     }
@@ -219,35 +224,34 @@ async function main() {
       const prompt = requireFlag(args.flags, "prompt");
       const aid = requireFlag(args.flags, "adapter-id");
       const bundle = typeof args.flags.bundle === "string" ? args.flags.bundle : undefined;
-      const webhook = typeof args.flags.webhook === "string" ? args.flags.webhook : undefined;
       const r = await apiCall(socket, "POST", "/v1/open_session",
-        { adapter_id: aid, adapter_ref: ref, prompt, ...(bundle ? { bundle_name: bundle } : {}), ...(webhook ? { webhook_url: webhook } : {}) },
-        newKey(), aid);
+        { adapter_ref: ref, prompt, ...(bundle ? { bundle_name: bundle } : {}) },
+        newKey(), adapterToken(aid));
       printJsonOrFormatted(asJson, r.body, `open: ${r.status} sid=${r.body.session_id ?? "?"}`);
       exitForStatus(r.status);
     }
     case "close-session": {
       const id = requireFlag(args.flags, "id");
-      const r = await apiCall(socket, "POST", "/v1/close_session", { session_id: id }, newKey(), adapterId);
+      const r = await apiCall(socket, "POST", "/v1/close_session", { session_id: id }, newKey(), adapterToken(adapterId));
       printJsonOrFormatted(asJson, r.body, `close: ${r.status}`);
       exitForStatus(r.status);
     }
     case "recycle-session": {
       const id = requireFlag(args.flags, "id");
-      const r = await apiCall(socket, "POST", "/v1/recycle_session", { session_id: id }, newKey(), adapterId);
+      const r = await apiCall(socket, "POST", "/v1/recycle_session", { session_id: id }, newKey(), adapterToken(adapterId));
       printJsonOrFormatted(asJson, r.body, `recycle: ${r.status}`);
       exitForStatus(r.status);
     }
     case "send-turn": {
       const id = requireFlag(args.flags, "id");
       const prompt = requireFlag(args.flags, "prompt");
-      const r = await apiCall(socket, "POST", "/v1/send_turn", { session_id: id, prompt }, newKey(), adapterId);
+      const r = await apiCall(socket, "POST", "/v1/send_turn", { session_id: id, prompt }, newKey(), adapterToken(adapterId));
       printJsonOrFormatted(asJson, r.body, `send-turn: ${r.status} turn_id=${r.body.turn_id ?? "?"}`);
       exitForStatus(r.status);
     }
     case "cancel-turn": {
       const id = requireFlag(args.flags, "id");
-      const r = await apiCall(socket, "POST", "/v1/cancel_turn", { session_id: id }, newKey(), adapterId);
+      const r = await apiCall(socket, "POST", "/v1/cancel_turn", { session_id: id }, newKey(), adapterToken(adapterId));
       printJsonOrFormatted(asJson, r.body, `cancel: ${r.status}`);
       exitForStatus(r.status);
     }
@@ -279,7 +283,7 @@ async function main() {
       }
       if (sub === "ack") {
         const eventId = requireFlag(args.flags, "event-id");
-        const r = await apiCall(socket, "POST", "/v1/dead_letters/ack", { event_ids: [eventId] }, newKey(), adapterId);
+        const r = await apiCall(socket, "POST", "/v1/dead_letters/ack", { event_ids: [eventId] }, newKey());
         printJsonOrFormatted(asJson, r.body, `ack: ${r.status}`);
         exitForStatus(r.status);
       }

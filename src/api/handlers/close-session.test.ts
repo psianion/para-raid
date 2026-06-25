@@ -32,7 +32,7 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
     auth: "none", signing: "none",
     adapters: { test: { webhook_url: "http://x/hook" } },
   } as unknown as ParaRaidConfig;
-  return { db, bus, tmux, modeController, dispatcher, config, logger: NOOP_LOGGER, hookEventsPath: (config.daemon as any).hook_events_path, ...overrides };
+  return { db, bus, tmux, modeController, dispatcher, config, logger: NOOP_LOGGER, hookEventsPath: (config.daemon as any).hook_events_path, adapter_id: "test", ...overrides };
 }
 
 test("close_session returns 200 closing for a live session", async () => {
@@ -73,4 +73,22 @@ test("close_session returns 404 for unknown session", async () => {
   expect(res.status).toBe(404);
   const body = await res.json() as any;
   expect(body.error).toBe("not_found");
+});
+
+test("close_session returns 403 when a different adapter owns the session", async () => {
+  const ctx = makeCtx({ adapter_id: "intruder" });
+  const sessionId = "00000000-0000-4000-8000-00000000acdc";
+  const tmuxName = "para-raid-test-close-acl";
+  (ctx.tmux as any).sessions.add(tmuxName);
+  ctx.db.raw.run(
+    "INSERT INTO sessions (id, adapter_id, adapter_ref, status, tmux_session, cwd, mcp_bundle, webhook_url, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    [sessionId, "test", "ref-close", "live", tmuxName, `${TMP}/wd`, "", "http://localhost/webhook", Date.now(), Date.now()]
+  );
+  mkdirSync(`${TMP}/wd`, { recursive: true });
+  const req = new Request("http://x/v1/close_session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+  expect(closeSessionHandler(req, ctx, {})).rejects.toThrow(/own this session/);
 });

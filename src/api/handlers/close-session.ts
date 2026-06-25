@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { closeSession } from "../../sessions/closer";
-import type { Handler } from "../router";
+import { assertOwnership, type Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
 import { enqueueWebhook } from "../../publisher/enqueue";
 
@@ -13,6 +13,7 @@ export const closeSessionHandler: Handler = async (req, ctx) => {
     "SELECT tmux_session, cwd, webhook_url, adapter_id FROM sessions WHERE id = ? AND status IN ('live','launching','recovering')"
   ).get(parsed.data.session_id) as any;
   if (!sess) return errorResponse(404, "not_found", "no live session with that id", ctx.requestId);
+  assertOwnership(ctx, sess.adapter_id);
 
   // Async close; respond immediately
   (async () => {

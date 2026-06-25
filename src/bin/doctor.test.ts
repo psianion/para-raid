@@ -29,6 +29,15 @@ test("parseClaudeAuthStatus fails when the command errored or output is unparsea
 test("checkAuthSecurity allows mode none and bearer with a strong token", () => {
   expect(checkAuthSecurity({ mode: "none" }).pass).toBe(true);
   expect(checkAuthSecurity({ mode: "bearer", token: "0123456789abcdef0123456789abcdef" }).pass).toBe(true);
+  // strong, non-sentinel per-adapter tokens pass too
+  expect(checkAuthSecurity({ mode: "bearer", token: "0123456789abcdef0123456789abcdef" },
+    { uxie: { token: "fedcba9876543210fedcba9876543210" } }).pass).toBe(true);
+});
+
+test("checkAuthSecurity refuses a weak per-adapter token or an adapter named like the admin sentinel", () => {
+  const strong = "0123456789abcdef0123456789abcdef";
+  expect(checkAuthSecurity({ mode: "bearer", token: strong }, { uxie: { token: "short" } }).pass).toBe(false);
+  expect(checkAuthSecurity({ mode: "bearer", token: strong }, { __admin__: { token: strong } }).pass).toBe(false);
 });
 
 test("checkAuthSecurity refuses bearer with a missing, short or whitespace-only token", () => {

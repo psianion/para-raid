@@ -43,6 +43,7 @@ export function writeClaudeSettings(workdir: string, hookEventsPath: string, par
       Stop:         entry("Stop"),
       SessionEnd:   entry("SessionEnd"),
       UserPromptSubmit: entry("UserPromptSubmit"),
+      PreToolUse:   entry("PreToolUse"),
     },
   };
   writeFileSync(join(workdir, ".claude/settings.json"), JSON.stringify(settings, null, 2));

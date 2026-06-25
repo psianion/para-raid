@@ -40,6 +40,11 @@ export interface Harness {
   shutdown: () => Promise<void>;
 }
 
+// Fixed test secrets — bearer mode derives identity from these.
+export const ADMIN_TOKEN = "admin-token-0123456789abcdef0123456789abcdef";
+export const TEST_ADAPTER_TOKEN = "test-adapter-token-0123456789abcdef0123";
+export const OTHER_ADAPTER_TOKEN = "other-adapter-token-0123456789abcdef012";
+
 export async function createHarness(opts?: { graceWindowMs?: number }): Promise<Harness> {
   const root = `/tmp/para-raid-it-${randomUUID().slice(0, 8)}`;
   rmSync(root, { recursive: true, force: true });
@@ -87,9 +92,13 @@ export async function createHarness(opts?: { graceWindowMs?: number }): Promise<
     recovery: { grace_window_ms: opts?.graceWindowMs ?? 200 } as any,
     publisher: { retry_window_ms: 60_000, backoff_ms: [50] } as any,
     limit: { warning_regex: "approaching" } as any,
-    auth: "none" as any,
+    // Bearer auth so per-adapter identity is exercised end-to-end.
+    auth: { mode: "bearer", token: ADMIN_TOKEN } as any,
     signing: "none" as any,
-    adapters: { test: { webhook_url: webhookUrl } } as any,
+    adapters: {
+      test: { webhook_url: webhookUrl, token: TEST_ADAPTER_TOKEN },
+      other: { webhook_url: webhookUrl, token: OTHER_ADAPTER_TOKEN },
+    } as any,
   } as any;
 
   const ctx: any = {
@@ -139,7 +148,9 @@ export async function createHarness(opts?: { graceWindowMs?: number }): Promise<
     api: async (method, path, body, headers) => {
       const init: any = {
         method,
-        headers: { "Content-Type": "application/json", ...(headers ?? {}) },
+        // Default to the "test" adapter's bearer token; a caller can override
+        // Authorization (e.g. the admin token) via the headers arg.
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${TEST_ADAPTER_TOKEN}`, ...(headers ?? {}) },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         unix: `${root}/api.sock`,
       };

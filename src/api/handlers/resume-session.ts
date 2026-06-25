@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Handler } from "../router";
+import { assertOwnership, type Handler } from "../router";
 import { jsonResponse, errorResponse } from "../envelope";
 import { enqueueWebhook } from "../../publisher/enqueue";
 
@@ -46,6 +46,7 @@ export const resumeSessionHandler: Handler = async (req, ctx) => {
     "SELECT adapter_id, tmux_session, cwd, webhook_url FROM sessions WHERE id = ? AND status = 'recovering'",
   ).get(data.session_id) as { adapter_id: string; tmux_session: string; cwd: string; webhook_url: string } | null;
   if (!sess) return errorResponse(404, "session_not_recovering", "no recovering session with that id", ctx.requestId);
+  assertOwnership(ctx, sess.adapter_id);
 
   // 3 attempts with backoff. We do this synchronously inside the request so
   // the caller learns whether resume succeeded; the smoke calls /resume_session

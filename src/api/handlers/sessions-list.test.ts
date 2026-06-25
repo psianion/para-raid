@@ -15,7 +15,7 @@ const TMP = "/tmp/pararaid-w56-sesslist";
 beforeEach(() => { rmSync(TMP, { recursive: true, force: true }); mkdirSync(TMP, { recursive: true }); });
 afterEach(() => { rmSync(TMP, { recursive: true, force: true }); });
 
-function makeCtx(): HandlerCtx {
+function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
   const db = createDb(":memory:");
   const bus = createEventBus();
   const tmux = createFakeTmux();
@@ -25,6 +25,8 @@ function makeCtx(): HandlerCtx {
   return {
     db, bus, tmux, modeController, dispatcher, config,
     logger: NOOP_LOGGER, hookEventsPath: `${TMP}/hook-events.jsonl`,
+    adapter_id: "__admin__",
+    ...overrides,
   };
 }
 
@@ -78,4 +80,16 @@ test("sessions_list paginates via cursor and limit and returns next_cursor when 
   const body2 = await res2.json() as any;
   expect(body2.sessions.map((s: any) => s.id)).toEqual(["s3", "s2"]);
   expect(body2.next_cursor).toBe(2000);
+});
+
+test("sessions_list scopes a regular adapter to its own rows, ignoring the query param", async () => {
+  const ctx = makeCtx({ adapter_id: "test" });
+  insertSess(ctx, "s1", "test", "live", 1000);
+  insertSess(ctx, "s2", "other", "live", 2000);
+
+  // Even if the caller asks for adapter_id=other, it only sees its own ('test').
+  const req = new Request("http://x/v1/sessions?adapter_id=other", { method: "GET" });
+  const res = await sessionsListHandler(req, ctx, {});
+  const body = await res.json() as any;
+  expect(body.sessions.map((s: any) => s.id)).toEqual(["s1"]);
 });

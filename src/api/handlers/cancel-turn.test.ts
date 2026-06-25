@@ -38,6 +38,7 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
     db, bus, tmux, modeController, dispatcher, config,
     logger: NOOP_LOGGER,
     hookEventsPath: `${TMP}/hook-events.jsonl`,
+    adapter_id: "test",
     ...overrides,
   };
 }
@@ -60,7 +61,7 @@ test("cancel_turn returns 200 with cancelled=true when Stop is observed", async 
 
   const req = new Request("http://x/v1/cancel_turn", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sid }),
   });
 
@@ -98,11 +99,23 @@ test("cancel_turn returns 404 session_not_live for unknown session", async () =>
   const ctx = makeCtx();
   const req = new Request("http://x/v1/cancel_turn", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Adapter-Id": "test" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: "44444444-4444-4444-8444-444444444444" }),
   });
   const res = await cancelTurnHandler(req, ctx, {});
   expect(res.status).toBe(404);
   const body = await res.json() as any;
   expect(body.error).toBe("session_not_live");
+});
+
+test("cancel_turn returns 403 when a different adapter owns the session", async () => {
+  const ctx = makeCtx({ adapter_id: "intruder" });
+  const sid = "33333333-3333-4333-8333-333333333334";
+  insertLiveSession(ctx, sid, "tmx-cancel-acl"); // seeded with adapter_id 'test'
+  const req = new Request("http://x/v1/cancel_turn", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sid }),
+  });
+  expect(cancelTurnHandler(req, ctx, {})).rejects.toThrow(/own this session/);
 });

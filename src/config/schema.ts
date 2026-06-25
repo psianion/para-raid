@@ -39,5 +39,5 @@ export const ConfigSchema = z.object({
     mode: z.enum(["none", "hmac"]),
     secret: z.string().default(""),
   }),
-  adapters: z.record(z.string(), z.object({ webhook_url: z.string().url() })).optional().default({}),
+  adapters: z.record(z.string(), z.object({ webhook_url: z.string().url(), token: z.string().min(1) })).optional().default({}),
 });
