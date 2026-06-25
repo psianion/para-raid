@@ -45,7 +45,11 @@ export const ADMIN_TOKEN = "admin-token-0123456789abcdef0123456789abcdef";
 export const TEST_ADAPTER_TOKEN = "test-adapter-token-0123456789abcdef0123";
 export const OTHER_ADAPTER_TOKEN = "other-adapter-token-0123456789abcdef012";
 
-export async function createHarness(opts?: { graceWindowMs?: number }): Promise<Harness> {
+export async function createHarness(opts?: {
+  graceWindowMs?: number;
+  signing?: { mode: "none" | "hmac"; secret?: string };
+  webhookUrl?: string;
+}): Promise<Harness> {
   const root = `/tmp/para-raid-it-${randomUUID().slice(0, 8)}`;
   rmSync(root, { recursive: true, force: true });
   mkdirSync(`${root}/workdirs`, { recursive: true });
@@ -68,7 +72,9 @@ export async function createHarness(opts?: { graceWindowMs?: number }): Promise<
       return new Response("ok");
     },
   });
-  const webhookUrl = `http://127.0.0.1:${webhookPort}/hook`;
+  // Point the adapters at an external receiver when one is supplied (the
+  // reference-adapter e2e does this); otherwise use the built-in capture server.
+  const webhookUrl = opts?.webhookUrl ?? `http://127.0.0.1:${webhookPort}/hook`;
 
   const tmux = createFakeTmux();
   const db = createDb(":memory:");
@@ -94,7 +100,7 @@ export async function createHarness(opts?: { graceWindowMs?: number }): Promise<
     limit: { warning_regex: "approaching" } as any,
     // Bearer auth so per-adapter identity is exercised end-to-end.
     auth: { mode: "bearer", token: ADMIN_TOKEN } as any,
-    signing: "none" as any,
+    signing: (opts?.signing ?? "none") as any,
     adapters: {
       test: { webhook_url: webhookUrl, token: TEST_ADAPTER_TOKEN },
       other: { webhook_url: webhookUrl, token: OTHER_ADAPTER_TOKEN },
@@ -114,7 +120,7 @@ export async function createHarness(opts?: { graceWindowMs?: number }): Promise<
   await reconcileOnBoot(ctx);
 
   const tailer = startTailer(hookEventsPath, db, bus);
-  const publisher = startPublisher(db, config.publisher as any, log);
+  const publisher = startPublisher(db, config.publisher as any, log, opts?.signing);
   const grace = startGraceTimer(ctx, 50);
   const watchdog = startWatchdog(ctx, 100);
   const router = createRouter(routes, ctx);

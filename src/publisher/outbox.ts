@@ -37,7 +37,14 @@ export function startPublisher(db: Db, config: { retry_window_ms: number; backof
 
       try {
         if (!isSafeWebhookUrl(evt.webhook_url)) throw new Error(`blocked unsafe webhook_url: ${evt.webhook_url}`);
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          // Stable per-event id and the adapter's dedup key. The daemon may
+          // redeliver the same event after a transient non-2xx, and the signed
+          // timestamp changes per attempt, so event_id is the only reliable
+          // idempotency key a receiver can use.
+          "X-Para-Raid-Event-Id": evt.event_id,
+        };
         if (signing?.mode === "hmac" && signing.secret) {
           // Sign `timestamp.body` (Stripe-style) so a receiver can reject stale
           // replays within a skew window, not just verify authenticity.

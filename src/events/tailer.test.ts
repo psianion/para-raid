@@ -1,6 +1,6 @@
 // src/events/tailer.test.ts
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync, appendFileSync } from "fs";
+import { mkdirSync, rmSync, writeFileSync, appendFileSync, existsSync } from "fs";
 import { startTailer } from "./tailer";
 import { createEventBus } from "./bus";
 import { createDb } from "../db";
@@ -34,6 +34,30 @@ test("tailer reads existing lines and persists offset", async () => {
 
   const cursor = db.raw.query<{ offset: number }, []>("SELECT offset FROM tailer_state WHERE id='singleton'").get();
   expect(cursor!.offset).toBeGreaterThan(0);
+
+  await tailer.stop();
+  db.close();
+});
+
+// Regression: a real daemon never pre-creates hook-events.jsonl, so the tailer
+// must create it before watching — otherwise the first hook write arrives as a
+// chokidar `add` (not `change`) and the launch SessionStart is lost. (The other
+// tests pre-create the file in beforeEach, which is what hid the bug.)
+test("tailer creates a missing file and still delivers the first appended event", async () => {
+  const db = createDb(":memory:");
+  const bus = createEventBus();
+  const seen: HookEvent[] = [];
+  bus.subscribe((e) => seen.push(e));
+
+  const missing = `${DIR}/not-created-yet.jsonl`;
+  expect(existsSync(missing)).toBe(false);
+  const tailer = startTailer(missing, db, bus);
+  expect(existsSync(missing)).toBe(true); // touched before watching
+
+  appendFileSync(missing, JSON.stringify({ hook_event_name: "SessionStart", session_id: "s3", cwd: "/tmp" }) + "\n");
+  await new Promise(r => setTimeout(r, 1500));
+
+  expect(seen.some((e) => e.hook_event_name === "SessionStart" && e.session_id === "s3")).toBe(true);
 
   await tailer.stop();
   db.close();
