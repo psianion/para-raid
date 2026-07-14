@@ -9,6 +9,9 @@ import {
 } from "./index";
 
 const BASE = "/tmp/pararaid-workdir-test";
+// POSIX file modes and the python-based hook script don't exist on Windows;
+// these tests are meaningful only on the Linux deploy target.
+const posixOnly = test.skipIf(process.platform === "win32");
 
 beforeEach(() => {
   rmSync(BASE, { recursive: true, force: true });
@@ -31,7 +34,7 @@ test("cleanupWorkdir removes the dir", () => {
   expect(existsSync(p)).toBe(false);
 });
 
-test("workdir is mode 0700", () => {
+posixOnly("workdir is mode 0700", () => {
   const p = provisionWorkdir(BASE, "mode-test");
   const m = statSync(p).mode & 0o777;
   expect(m).toBe(0o700);
@@ -49,7 +52,7 @@ test("writeClaudeSettings creates valid hook config", () => {
   expect(j.hooks.PreToolUse[0].hooks[0].command).toContain("PreToolUse");
 });
 
-test("hook command produces parseable JSON when run", async () => {
+posixOnly("hook command produces parseable JSON when run", async () => {
   const p = provisionWorkdir(BASE, "shell-test");
   const events = `${BASE}/events.jsonl`;
   writeClaudeSettings(p, events, "para-2");
@@ -61,7 +64,7 @@ test("hook command produces parseable JSON when run", async () => {
   expect(parsed.hook_event_name).toBe("SessionStart");
   expect(parsed.session_id).toBe("para-2");
 });
-test("hook command merges claude stdin payload (forwards last_assistant_message)", async () => {
+posixOnly("hook command merges claude stdin payload (forwards last_assistant_message)", async () => {
   const p = provisionWorkdir(BASE, "shell-stdin");
   const events = `${BASE}/events-stdin.jsonl`;
   writeClaudeSettings(p, events, "para-3");
