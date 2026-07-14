@@ -7,6 +7,7 @@ import { startTailer } from "../../src/events/tailer";
 import { createDispatcher } from "../../src/sessions/dispatcher";
 import { startPublisher } from "../../src/publisher/outbox";
 import { createModeController } from "../../src/limit/mode-controller";
+import { compileWarningRegex, watchStopEventsForWarning } from "../../src/limit/warning-scanner";
 import { reconcileOnBoot } from "../../src/recovery/boot";
 import { startGraceTimer } from "../../src/recovery/grace";
 import { startWatchdog } from "../../src/recovery/watchdog";
@@ -117,6 +118,9 @@ export async function createHarness(opts?: {
     dispatcher,
     hookEventsPath,
   };
+  // Same Stop-path warning wiring the real daemon boot does.
+  watchStopEventsForWarning(bus, compileWarningRegex(config.limit.warning_regex), modeController, log);
+
   await reconcileOnBoot(ctx);
 
   const tailer = startTailer(hookEventsPath, db, bus);

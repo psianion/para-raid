@@ -366,12 +366,21 @@ describe("Flow 8: per-adapter identity + ACL", () => {
 });
 
 describe("Flow 7: limit/quota warning -> pause", () => {
-  // Plan-defect (carry-over): warning_regex auto-pause is NOT wired in any
-  // hot path. `src/limit/warning-scanner.ts` exposes scanForWarning() but no
-  // caller invokes it on Stop events, so `paused` never flips automatically
-  // from a hook event today. Wave 9 carry-over.
-  test.todo(
-    "Stop event matching warning_regex auto-pauses the daemon (Wave 9 carry-over: warning-scanner not wired into Stop path)",
-    () => {},
-  );
+  test("Stop event matching warning_regex auto-pauses the daemon", async () => {
+    const { sid } = await openAndDriveLive();
+    const before = await h.api("GET", "/v1/status", undefined, { Authorization: `Bearer ${ADMIN_TOKEN}` });
+    expect(before.body.mode).toBe("running");
+
+    // A late Stop (e.g. one landing after a turn timeout) whose reply trips
+    // the harness warning_regex ("approaching"). bus.emit is synchronous, so
+    // the pause is observable immediately.
+    h.emitHookEvent({
+      hook_event_name: "Stop" as any,
+      session_id: sid,
+      last_assistant_message: "You are approaching your usage limit — resets at 5pm.",
+    });
+
+    const after = await h.api("GET", "/v1/status", undefined, { Authorization: `Bearer ${ADMIN_TOKEN}` });
+    expect(after.body.mode).toBe("paused");
+  }, 15_000);
 });

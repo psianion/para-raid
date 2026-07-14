@@ -1,3 +1,5 @@
+import type { HookEvent } from "../types";
+
 export function scanForWarning(text: string, warningRegex: RegExp): boolean {
   return warningRegex.test(text);
 }
@@ -43,4 +45,21 @@ export function pauseIfLimitReached(
   mode.pause();
   logger.warn("limit.auto_pause", { reason: "usage_warning_detected" });
   return true;
+}
+
+/** Wire the scanner into the hook-event bus: any Stop whose reply trips the
+ *  regex pauses the daemon. Covers what the dispatcher's onDispatch scan
+ *  misses — a Stop landing after a turn timeout, or a session driven outside
+ *  the dispatcher (Wave 9 carry-over). */
+export function watchStopEventsForWarning(
+  bus: { subscribe(fn: (event: HookEvent) => void): unknown },
+  regex: RegExp | null,
+  mode: { isPaused(): boolean; pause(): void },
+  logger: { warn(event: string, meta?: unknown): void },
+): void {
+  if (!regex) return;
+  bus.subscribe((event) => {
+    if (event.hook_event_name !== "Stop") return;
+    pauseIfLimitReached(event.last_assistant_message ?? "", regex, mode, logger);
+  });
 }

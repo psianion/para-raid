@@ -13,7 +13,7 @@ import { createDispatcher } from "./sessions/dispatcher";
 import { startPublisher } from "./publisher/outbox";
 import { createModeController } from "./limit/mode-controller";
 import { startRamValve } from "./limit/ram-valve";
-import { compileWarningRegex, pauseIfLimitReached } from "./limit/warning-scanner";
+import { compileWarningRegex, pauseIfLimitReached, watchStopEventsForWarning } from "./limit/warning-scanner";
 import { reconcileOnBoot } from "./recovery/boot";
 import { startGraceTimer } from "./recovery/grace";
 import { startWatchdog } from "./recovery/watchdog";
@@ -84,6 +84,11 @@ async function main() {
   await reconcileOnBoot(ctx);
 
   const tailer = startTailer(hookEventsPath, db, bus);
+
+  // Also scan Stop hook events directly: the onDispatch scan above only sees
+  // dispatcher-run turns and misses a warning that lands after a turn timeout
+  // or from a session driven outside the dispatcher (Wave 9 carry-over).
+  watchStopEventsForWarning(bus, limitRegex, modeController, log);
 
   // Fire a `tool_call` webhook for every PreToolUse hook event, so adapters can
   // observe (not gate) each tool the session is about to run.
