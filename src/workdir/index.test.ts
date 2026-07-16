@@ -87,6 +87,9 @@ test("acceptClaudeTrust creates ~/.claude.json when missing", () => {
   const j = JSON.parse(readFileSync(cfgPath, "utf-8"));
   expect(j.projects["/tmp/some-workdir"].hasTrustDialogAccepted).toBe(true);
   expect(j.projects["/tmp/some-workdir"].mcpServers).toEqual({});
+  // claude >= 2.1.2xx: --dangerously-skip-permissions shows a one-time
+  // acceptance dialog gated on this top-level flag.
+  expect(j.bypassPermissionsModeAccepted).toBe(true);
 });
 
 test("acceptClaudeTrust preserves existing config", () => {

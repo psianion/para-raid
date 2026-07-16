@@ -84,6 +84,11 @@ export function acceptClaudeTrust(workdir: string, claudeJsonPath: string = join
   const existing = projects[workdir] ?? {};
   projects[workdir] = { ...MINIMAL_PROJECT_ENTRY, ...existing, hasTrustDialogAccepted: true };
   cfg.projects = projects;
+  // claude >= 2.1.2xx shows a separate one-time "Bypass Permissions mode"
+  // acceptance dialog when launched with --dangerously-skip-permissions.
+  // Without this top-level flag the pane blocks on that prompt and the
+  // SessionStart hook never fires (launch dies at the 30s timeout).
+  cfg.bypassPermissionsModeAccepted = true;
 
   const tmp = `${claudeJsonPath}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(cfg, null, 2));
