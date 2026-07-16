@@ -36,15 +36,20 @@ export function launchSession(opts: LaunchOpts): Promise<void> {
       }
     }, 1500);
 
+    // Assigned below; referenced in the timer/catch that may fire first.
+    let unsub: () => void = () => {};
+
     const timer = setTimeout(() => {
       clearInterval(dialogPoll);
+      unsub();
       reject(new Error(`SessionStart timeout for ${sessionId}`));
     }, timeoutMs);
 
-    bus.subscribe((event) => {
+    unsub = bus.subscribe((event) => {
       if (event.hook_event_name === "SessionStart" && event.session_id === sessionId) {
         clearInterval(dialogPoll);
         clearTimeout(timer);
+        unsub();
         resolve();
       }
     });
@@ -59,6 +64,7 @@ export function launchSession(opts: LaunchOpts): Promise<void> {
     } catch (err) {
       clearInterval(dialogPoll);
       clearTimeout(timer);
+      unsub();
       reject(err instanceof Error ? err : new Error(String(err)));
     }
   });
