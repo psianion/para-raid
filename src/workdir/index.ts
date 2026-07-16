@@ -107,12 +107,18 @@ export function acceptClaudeTrust(workdir: string, claudeJsonPath: string = join
  */
 export function claudeLaunchCommand(opts: { args?: string[]; unsetEnv?: string[] } = {}): string {
   const args = opts.args ?? ["--dangerously-skip-permissions"];
-  const unset = opts.unsetEnv?.length ? `env ${opts.unsetEnv.map(k => `-u ${k}`).join(" ")} ` : "";
+  // Always route through `env`: it both unsets requested vars and carries the
+  // IS_SANDBOX assignment (a bare `exec VAR=x cmd` is invalid bash).
+  const unset = opts.unsetEnv?.length ? `env ${opts.unsetEnv.map(k => `-u ${k}`).join(" ")} ` : "env ";
   // Optional shell prep sourced before exec (e.g. "source ~/.nvm/nvm.sh" for
   // nvm installs whose claude isn't on the non-interactive PATH). The daemon
   // sets this from config.claude.env_setup at boot; empty by default so a
   // claude already on PATH (apt/volta/asdf/global) just works.
   const envSetup = process.env.PARARAID_CLAUDE_ENV_SETUP?.trim();
   const prep = envSetup ? `${envSetup} && ` : "";
-  return `bash -c '${prep}exec ${unset}claude ${args.join(" ")}'`;
+  // IS_SANDBOX=1 suppresses claude's interactive "Bypass Permissions mode"
+  // acceptance dialog (present since ~2.1.2xx), which otherwise blocks the
+  // pane before SessionStart regardless of config seeding. Worker sessions
+  // are exactly the unattended/sandboxed case the dialog exists to gate.
+  return `bash -c '${prep}exec ${unset}IS_SANDBOX=1 claude ${args.join(" ")}'`;
 }
