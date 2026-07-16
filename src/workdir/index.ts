@@ -38,6 +38,9 @@ export function writeClaudeSettings(workdir: string, hookEventsPath: string, par
   ];
 
   const settings = {
+    // Project-scoped .mcp.json servers (the rendered MCP bundle) are disabled
+    // until approved; workers are non-interactive, so approve them here.
+    enableAllProjectMcpServers: true,
     hooks: {
       SessionStart: entry("SessionStart"),
       Stop:         entry("Stop"),

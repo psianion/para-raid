@@ -44,6 +44,7 @@ test("writeClaudeSettings creates valid hook config", () => {
   const p = provisionWorkdir(BASE, "settings-test");
   writeClaudeSettings(p, "/tmp/hooks.jsonl", "para-1");
   const j = JSON.parse(readFileSync(`${p}/.claude/settings.json`, "utf-8"));
+  expect(j.enableAllProjectMcpServers).toBe(true);
   expect(j.hooks.Stop[0].matcher).toBe("");
   expect(j.hooks.Stop[0].hooks[0].type).toBe("command");
   expect(j.hooks.Stop[0].hooks[0].command).toContain("Stop");

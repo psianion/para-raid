@@ -23,5 +23,9 @@ export async function sendPrompt(tmux: TmuxAdapter, session: string, prompt: str
   } else {
     await tmux.sendKeysLiteral(session, prompt);
   }
+  // Claude's TUI paste detection treats an Enter arriving in the same input
+  // burst as the text as a literal newline, leaving the prompt unsubmitted.
+  // A short gap makes the Enter read as a distinct human-like keypress.
+  await new Promise((r) => setTimeout(r, 250));
   await tmux.sendEnter(session);
 }
