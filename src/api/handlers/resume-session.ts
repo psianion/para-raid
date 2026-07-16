@@ -61,6 +61,25 @@ export const resumeSessionHandler: Handler = async (req, ctx) => {
   }
   resuming.add(data.session_id);
 
+  // Re-adopt before respawn: with KillMode=process the tmux pane (and the
+  // claude inside it) survives daemon restarts. That claude never stopped —
+  // its hooks still append to the same events file the tailer reads — so
+  // recovery is just marking it live. `claude --resume` on a still-running
+  // session spawns a doomed second instance and fails every attempt.
+  const panePid = await ctx.tmux.listPanePid(sess.tmux_session).catch(() => null);
+  if (panePid !== null) {
+    resuming.delete(data.session_id);
+    ctx.db.raw.run("UPDATE sessions SET status = 'live', updated_at = ? WHERE id = ?", [Date.now(), data.session_id]);
+    enqueueWebhook(ctx.db, {
+      eventType: "session_resumed",
+      sessionId: data.session_id,
+      adapterId: sess.adapter_id,
+      webhookUrl: sess.webhook_url,
+      payload: { session_id: data.session_id, readopted: true },
+    });
+    return jsonResponse(200, { session_id: data.session_id, status: "live" });
+  }
+
   // 3 attempts with backoff. We do this synchronously inside the request so
   // the caller learns whether resume succeeded; the smoke calls /resume_session
   // and then exits, and there's nothing useful to do in the background.

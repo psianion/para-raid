@@ -158,3 +158,36 @@ test("resume_session returns 403 when a different adapter owns the session", asy
   });
   expect(resumeSessionHandler(req, ctx, {})).rejects.toThrow(/own this session/);
 });
+
+test("resume_session re-adopts a surviving pane without spawning claude --resume", async () => {
+  const ctx = makeCtx();
+  const sid = "88888888-8888-4888-8888-888888888888";
+  insertRecoveringSession(ctx, sid);
+  // pane survived the daemon restart (KillMode=process world)
+  (ctx.tmux as any).sessions.add(`tmx-${sid}`);
+
+  let calls = 0;
+  __resumeHooks.spawn = async () => { calls++; return false; };
+
+  const req = new Request("http://x/v1/resume_session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sid }),
+  });
+  const res = await resumeSessionHandler(req, ctx, {});
+  expect(res.status).toBe(200);
+  const body = await res.json() as any;
+  expect(body.status).toBe("live");
+  expect(calls).toBe(0); // never respawned — the running claude was re-adopted
+
+  const row = ctx.db.raw.query<{ status: string }, [string]>(
+    "SELECT status FROM sessions WHERE id = ?",
+  ).get(sid) as { status: string };
+  expect(row.status).toBe("live");
+
+  const wh = ctx.db.raw.query<{ payload_json: string }, [string]>(
+    "SELECT payload_json FROM webhook_queue WHERE session_id = ? AND event_type = 'session_resumed' LIMIT 1",
+  ).get(sid) as { payload_json: string } | null;
+  expect(wh).not.toBeNull();
+  expect(JSON.parse(wh!.payload_json).readopted).toBe(true);
+});
