@@ -23,7 +23,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export function promptStillPending(pane: string, probe: string): boolean {
   const lines = pane.split("\n").map((l) => l.trim());
   const inputLine = lines.filter((l) => l.startsWith("❯")).at(-1);
-  return inputLine !== undefined && inputLine.includes(probe);
+  if (inputLine === undefined) return false;
+  // Pasted (multi-line / >8KB) prompts render as a "[Pasted text #N +M lines]"
+  // placeholder, not the prompt text — the probe never matches those.
+  return inputLine.includes(probe) || inputLine.includes("[Pasted text");
 }
 
 /**

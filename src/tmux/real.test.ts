@@ -48,4 +48,9 @@ test("promptStillPending: pending input line detected, submitted/echoed history 
   const submitted = "❯ hello there\n● Hi!\n──────\n❯ \n──────\n  bypass";
   expect(promptStillPending(submitted, "hello there")).toBe(false);
   expect(promptStillPending("no prompt lines at all", "hello")).toBe(false);
+  // pasted prompts render a placeholder, never the probe text
+  const pastedPending = "❯ [Pasted text #1 +9 lines]\n──────\n  bypass permissions on";
+  expect(promptStillPending(pastedPending, "You are the scheduled librarian")).toBe(true);
+  const pastedSubmitted = "❯ [Pasted text #1 +9 lines]\n● Working…\n──────\n❯ \n──────\n  bypass";
+  expect(promptStillPending(pastedSubmitted, "You are the scheduled librarian")).toBe(false);
 });

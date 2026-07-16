@@ -119,9 +119,9 @@ export function claudeLaunchCommand(opts: { args?: string[]; unsetEnv?: string[]
   // claude already on PATH (apt/volta/asdf/global) just works.
   const envSetup = process.env.PARARAID_CLAUDE_ENV_SETUP?.trim();
   const prep = envSetup ? `${envSetup} && ` : "";
-  // IS_SANDBOX=1 suppresses claude's interactive "Bypass Permissions mode"
-  // acceptance dialog (present since ~2.1.2xx), which otherwise blocks the
-  // pane before SessionStart regardless of config seeding. Worker sessions
-  // are exactly the unattended/sandboxed case the dialog exists to gate.
+  // IS_SANDBOX=1 marks worker sessions as the unattended/sandboxed case. It
+  // did NOT reliably suppress the "Bypass Permissions mode" dialog on 2.1.211
+  // — the launcher's pane poll answers it (launcher.ts) — but it's kept as
+  // harmless belt-and-suspenders for versions where it does.
   return `bash -c '${prep}exec ${unset}IS_SANDBOX=1 claude ${args.join(" ")}'`;
 }
