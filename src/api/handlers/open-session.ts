@@ -88,7 +88,9 @@ export const openSessionHandler: Handler = async (req, ctx) => {
     try {
       await launchSession({
         tmux: ctx.tmux, bus: ctx.bus,
-        sessionId, tmuxName, cwd: workdir, timeoutMs: 30_000,
+        // No timeoutMs override: the launcher default (120s) governs — 30s
+        // killed healthy cold-boot launches on slower machines.
+        sessionId, tmuxName, cwd: workdir,
       });
       ctx.db.raw.run("UPDATE sessions SET status = 'live', updated_at = ? WHERE id = ?", [Date.now(), sessionId]);
       enqueueWebhook(ctx.db, { eventType: "session_live", sessionId, adapterId, webhookUrl, payload: { session_id: sessionId } });

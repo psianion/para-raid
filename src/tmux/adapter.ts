@@ -26,7 +26,23 @@ export function promptStillPending(pane: string, probe: string): boolean {
   return inputLine !== undefined && inputLine.includes(probe);
 }
 
+/**
+ * Poll until claude's input prompt marker is visible. SessionStart (which
+ * gates turn dispatch) fires before the TUI is interactive on slow machines;
+ * text sent into that gap — especially a paste — lands in the void.
+ */
+export async function waitForInputReady(tmux: TmuxAdapter, session: string, capMs = 20_000): Promise<void> {
+  const deadline = Date.now() + capMs;
+  while (Date.now() < deadline) {
+    const pane = await tmux.capturePaneOutput(session, 20).catch(() => "");
+    if (pane.includes("❯")) return;
+    await sleep(500);
+  }
+  // Cap reached: proceed best-effort; the submission verify below still guards.
+}
+
 export async function sendPrompt(tmux: TmuxAdapter, session: string, prompt: string): Promise<void> {
+  await waitForInputReady(tmux, session);
   if (prompt.includes("\n") || prompt.length > 8192) {
     await tmux.loadBufferAndPaste(session, prompt);
   } else {

@@ -17,8 +17,9 @@ export function createFakeTmux(): TmuxAdapter & { calls: FakeTmuxCall[]; session
   const fake: TmuxAdapter & { calls: FakeTmuxCall[]; sessions: Set<string>; paneOutput: string } = {
     calls,
     sessions,
-    // Tests set this to script what capturePaneOutput returns.
-    paneOutput: "fake output",
+    // Tests set this to script what capturePaneOutput returns. Default shows
+    // a ready, empty input line so sendPrompt's readiness/verify checks pass.
+    paneOutput: "❯ \n  bypass permissions on",
     async newSession(name, cwd, command) { record("newSession", [name, cwd, command]); sessions.add(name); },
     async hasSession(name) { record("hasSession", [name]); return sessions.has(name); },
     async sendKeysLiteral(name, text) { record("sendKeysLiteral", [name, text]); },
