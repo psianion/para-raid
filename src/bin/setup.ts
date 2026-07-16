@@ -39,11 +39,16 @@ After=network-online.target
 [Service]
 Type=simple
 Environment=PARARAID_CONFIG=${opts.configPath}
-Environment=PATH=${opts.home}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=${opts.home}/.local/bin:${opts.home}/.bun/bin:/usr/local/bin:/usr/bin:/bin
 UnsetEnvironment=ANTHROPIC_API_KEY
 ExecStart=${opts.bunPath} run ${opts.repoDir}/src/daemon.ts
 Restart=on-failure
 RestartSec=2
+# KillMode=process: only the daemon dies on stop/restart. The default
+# (control-group) would also kill the tmux server and every claude worker in
+# it — making the A6 recovery flow (panes survive daemon restarts, boot
+# reconcile re-adopts them) structurally impossible.
+KillMode=process
 MemoryHigh=85%
 MemoryMax=95%
 
