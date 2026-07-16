@@ -1,0 +1,9 @@
+[Unit]
+Description=SUP librarian — nightly scrypt vault maintenance session
+# Socket client: the para-raid daemon must be up.
+After=para-raid.service
+Requisite=para-raid.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/para-raid/scripts/vps/librarian-run.sh

@@ -1,0 +1,10 @@
+[Unit]
+Description=SUP librarian nightly trigger
+
+[Timer]
+# 03:30 — after the 02:00-02:45 update/backup cron window (see scrypt STACK.md).
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

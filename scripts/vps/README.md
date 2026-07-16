@@ -64,3 +64,23 @@ would corrupt it once a migration beyond 001 exists.
   # crontab -e
   0 9 * * * para-raid doctor >/dev/null 2>&1 || "$HOME/bin/sup-notify" "para-raid doctor failing — check claude auth"
   ```
+
+## Librarian (nightly vault maintenance)
+
+`librarian.timer` → `librarian.service` → `librarian-run.sh`: closes last
+night's session, then opens a fresh one (`--adapter-id uxie`, ref
+`librarian:<utc-date>`, bundle `scrypt`, prompt from `librarian-prompt.txt`).
+The digest reply reaches Discord through uxie's normal `turn_replied` webhook.
+
+Setup:
+
+```bash
+install -m 0755 scripts/vps/librarian-run.sh ~/para-raid/scripts/vps/  # repo path is fine too
+cp scripts/vps/librarian.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now librarian.timer
+```
+
+Raise `[concurrency].turn_timeout_ms` in `config.toml` (e.g. `1800000` = 30
+min): the librarian's first turn does real work, and a timed-out first turn
+kills the session and drops the reply. Failures (daemon down, quota-paused,
+pool full) post to Discord via `~/bin/sup-notify` when present.
