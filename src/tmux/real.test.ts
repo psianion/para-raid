@@ -22,3 +22,13 @@ test("sendPrompt uses loadBufferAndPaste for text > 8KB", async () => {
   await sendPrompt(tmux, "sess", "x".repeat(9000));
   expect(tmux.calls[0].method).toBe("loadBufferAndPaste");
 });
+
+test("promptStillPending: pending input line detected, submitted/echoed history ignored", async () => {
+  const { promptStillPending } = await import("./adapter");
+  const pending = "❯ hello there\n──────\n  bypass permissions on";
+  expect(promptStillPending(pending, "hello there")).toBe(true);
+  // after submit: echoed history line above, EMPTY input line below
+  const submitted = "❯ hello there\n● Hi!\n──────\n❯ \n──────\n  bypass";
+  expect(promptStillPending(submitted, "hello there")).toBe(false);
+  expect(promptStillPending("no prompt lines at all", "hello")).toBe(false);
+});
