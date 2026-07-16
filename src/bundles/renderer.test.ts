@@ -28,6 +28,9 @@ url = "http://localhost:8080/mcp"
 
   const mcpJson = JSON.parse(readFileSync(join(cwd, ".mcp.json"), "utf-8"));
   expect(mcpJson.mcpServers.scrypt.url).toBe("http://localhost:8080/mcp");
+  // Required by claude's .mcp.json schema — a url entry without type is
+  // parsed as a command-less stdio server and silently dropped.
+  expect(mcpJson.mcpServers.scrypt.type).toBe("http");
 });
 
 test("throws on unknown bundle name", () => {

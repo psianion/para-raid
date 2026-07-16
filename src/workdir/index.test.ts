@@ -44,6 +44,7 @@ test("writeClaudeSettings creates valid hook config", () => {
   const p = provisionWorkdir(BASE, "settings-test");
   writeClaudeSettings(p, "/tmp/hooks.jsonl", "para-1");
   const j = JSON.parse(readFileSync(`${p}/.claude/settings.json`, "utf-8"));
+  expect(j.enableAllProjectMcpServers).toBe(true);
   expect(j.hooks.Stop[0].matcher).toBe("");
   expect(j.hooks.Stop[0].hooks[0].type).toBe("command");
   expect(j.hooks.Stop[0].hooks[0].command).toContain("Stop");
@@ -87,6 +88,9 @@ test("acceptClaudeTrust creates ~/.claude.json when missing", () => {
   const j = JSON.parse(readFileSync(cfgPath, "utf-8"));
   expect(j.projects["/tmp/some-workdir"].hasTrustDialogAccepted).toBe(true);
   expect(j.projects["/tmp/some-workdir"].mcpServers).toEqual({});
+  // claude >= 2.1.2xx: --dangerously-skip-permissions shows a one-time
+  // acceptance dialog gated on this top-level flag.
+  expect(j.bypassPermissionsModeAccepted).toBe(true);
 });
 
 test("acceptClaudeTrust preserves existing config", () => {
@@ -120,23 +124,23 @@ test("acceptClaudeTrust forces hasTrustDialogAccepted=true even if previously fa
 test("claudeLaunchCommand has no env prep by default (claude on PATH)", () => {
   delete process.env.PARARAID_CLAUDE_ENV_SETUP;
   const cmd = claudeLaunchCommand();
-  expect(cmd).toContain("exec claude --dangerously-skip-permissions");
+  expect(cmd).toContain("exec env IS_SANDBOX=1 claude --dangerously-skip-permissions");
   expect(cmd).not.toContain("nvm");
 });
 
 test("claudeLaunchCommand prepends configured env_setup", () => {
   process.env.PARARAID_CLAUDE_ENV_SETUP = "source /opt/node/env.sh";
   const cmd = claudeLaunchCommand();
-  expect(cmd).toContain("source /opt/node/env.sh && exec claude");
+  expect(cmd).toContain("source /opt/node/env.sh && exec env IS_SANDBOX=1 claude");
   delete process.env.PARARAID_CLAUDE_ENV_SETUP;
 });
 
 test("claudeLaunchCommand passes through extra args", () => {
   const cmd = claudeLaunchCommand({ args: ["--print", "hello"] });
-  expect(cmd).toContain("exec claude --print hello");
+  expect(cmd).toContain("exec env IS_SANDBOX=1 claude --print hello");
 });
 
 test("claudeLaunchCommand strips env vars when requested", () => {
   const cmd = claudeLaunchCommand({ args: ["--dangerously-skip-permissions"], unsetEnv: ["ANTHROPIC_API_KEY", "FOO"] });
-  expect(cmd).toContain("exec env -u ANTHROPIC_API_KEY -u FOO claude --dangerously-skip-permissions");
+  expect(cmd).toContain("exec env -u ANTHROPIC_API_KEY -u FOO IS_SANDBOX=1 claude --dangerously-skip-permissions");
 });

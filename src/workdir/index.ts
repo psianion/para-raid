@@ -38,6 +38,9 @@ export function writeClaudeSettings(workdir: string, hookEventsPath: string, par
   ];
 
   const settings = {
+    // Project-scoped .mcp.json servers (the rendered MCP bundle) are disabled
+    // until approved; workers are non-interactive, so approve them here.
+    enableAllProjectMcpServers: true,
     hooks: {
       SessionStart: entry("SessionStart"),
       Stop:         entry("Stop"),
@@ -84,6 +87,11 @@ export function acceptClaudeTrust(workdir: string, claudeJsonPath: string = join
   const existing = projects[workdir] ?? {};
   projects[workdir] = { ...MINIMAL_PROJECT_ENTRY, ...existing, hasTrustDialogAccepted: true };
   cfg.projects = projects;
+  // claude >= 2.1.2xx shows a separate one-time "Bypass Permissions mode"
+  // acceptance dialog when launched with --dangerously-skip-permissions.
+  // Without this top-level flag the pane blocks on that prompt and the
+  // SessionStart hook never fires (launch dies at the 30s timeout).
+  cfg.bypassPermissionsModeAccepted = true;
 
   const tmp = `${claudeJsonPath}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(cfg, null, 2));
@@ -102,12 +110,18 @@ export function acceptClaudeTrust(workdir: string, claudeJsonPath: string = join
  */
 export function claudeLaunchCommand(opts: { args?: string[]; unsetEnv?: string[] } = {}): string {
   const args = opts.args ?? ["--dangerously-skip-permissions"];
-  const unset = opts.unsetEnv?.length ? `env ${opts.unsetEnv.map(k => `-u ${k}`).join(" ")} ` : "";
+  // Always route through `env`: it both unsets requested vars and carries the
+  // IS_SANDBOX assignment (a bare `exec VAR=x cmd` is invalid bash).
+  const unset = opts.unsetEnv?.length ? `env ${opts.unsetEnv.map(k => `-u ${k}`).join(" ")} ` : "env ";
   // Optional shell prep sourced before exec (e.g. "source ~/.nvm/nvm.sh" for
   // nvm installs whose claude isn't on the non-interactive PATH). The daemon
   // sets this from config.claude.env_setup at boot; empty by default so a
   // claude already on PATH (apt/volta/asdf/global) just works.
   const envSetup = process.env.PARARAID_CLAUDE_ENV_SETUP?.trim();
   const prep = envSetup ? `${envSetup} && ` : "";
-  return `bash -c '${prep}exec ${unset}claude ${args.join(" ")}'`;
+  // IS_SANDBOX=1 marks worker sessions as the unattended/sandboxed case. It
+  // did NOT reliably suppress the "Bypass Permissions mode" dialog on 2.1.211
+  // — the launcher's pane poll answers it (launcher.ts) — but it's kept as
+  // harmless belt-and-suspenders for versions where it does.
+  return `bash -c '${prep}exec ${unset}IS_SANDBOX=1 claude ${args.join(" ")}'`;
 }

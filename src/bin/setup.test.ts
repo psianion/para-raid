@@ -41,4 +41,9 @@ test("renderSystemdUnit emits the key hardening lines", () => {
   expect(u).toContain("ExecStart=/b/bun run /r/src/daemon.ts");
   expect(u).toContain("MemoryMax=95%");
   expect(u).toContain("WantedBy=default.target");
+  // tmux server + claude workers must OUTLIVE daemon restarts (A6 recovery);
+  // the default control-group kill would take them all down.
+  expect(u).toContain("KillMode=process");
+  // claude's native installer target must be on the unit's PATH.
+  expect(u).toContain("/home/me/.local/bin");
 });

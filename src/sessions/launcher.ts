@@ -12,17 +12,44 @@ export interface LaunchOpts {
 }
 
 export function launchSession(opts: LaunchOpts): Promise<void> {
-  const { tmux, bus, sessionId, tmuxName, cwd, timeoutMs = 30_000 } = opts;
+  // 120s: claude's cold boot on modest hardware (WSL2, first model-version
+  // check) measured ~46s — 30s was tuned on the VPS and killed healthy
+  // launches. A genuinely dead pane just fails slower; the watchdog covers it.
+  const { tmux, bus, sessionId, tmuxName, cwd, timeoutMs = 120_000 } = opts;
 
   return new Promise<void>(async (resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`SessionStart timeout for ${sessionId}`)),
-      timeoutMs,
-    );
+    // claude shows an interactive "Bypass Permissions mode" acceptance dialog
+    // on EVERY --dangerously-skip-permissions launch (>=2.1.2xx) and does not
+    // persist the answer, so the launcher must answer it: watch the pane and
+    // select "2. Yes, I accept" when the prompt appears. Config-flag seeding
+    // and IS_SANDBOX=1 were both tried and do not suppress it.
+    const dialogPoll = setInterval(async () => {
+      try {
+        const pane = await tmux.capturePaneOutput(tmuxName, 40);
+        if (/Yes, I accept/.test(pane)) {
+          await tmux.sendKeysLiteral(tmuxName, "2");
+          await tmux.sendEnter(tmuxName);
+          clearInterval(dialogPoll);
+        }
+      } catch {
+        // pane may not exist yet or already be gone; keep polling until launch settles
+      }
+    }, 1500);
 
-    bus.subscribe((event) => {
+    // Assigned below; referenced in the timer/catch that may fire first.
+    let unsub: () => void = () => {};
+
+    const timer = setTimeout(() => {
+      clearInterval(dialogPoll);
+      unsub();
+      reject(new Error(`SessionStart timeout for ${sessionId}`));
+    }, timeoutMs);
+
+    unsub = bus.subscribe((event) => {
       if (event.hook_event_name === "SessionStart" && event.session_id === sessionId) {
+        clearInterval(dialogPoll);
         clearTimeout(timer);
+        unsub();
         resolve();
       }
     });
@@ -35,7 +62,9 @@ export function launchSession(opts: LaunchOpts): Promise<void> {
     try {
       await tmux.newSession(tmuxName, cwd, launchCmd);
     } catch (err) {
+      clearInterval(dialogPoll);
       clearTimeout(timer);
+      unsub();
       reject(err instanceof Error ? err : new Error(String(err)));
     }
   });

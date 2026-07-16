@@ -10,9 +10,11 @@ export function renderMcpJson(bundles: Bundle[], bundleName: string, cwd: string
   const mcpServers: Record<string, Record<string, unknown>> = {};
   for (const server of bundle.servers) {
     if (server.type === "stdio") {
-      mcpServers[server.name] = { command: server.command, args: server.args ?? [] };
+      mcpServers[server.name] = { type: "stdio", command: server.command, args: server.args ?? [] };
     } else {
-      mcpServers[server.name] = { url: server.url };
+      // "type" is REQUIRED for url-based servers: without it claude parses
+      // the entry as a command-less stdio server and silently drops it.
+      mcpServers[server.name] = { type: "http", url: server.url };
     }
   }
 
