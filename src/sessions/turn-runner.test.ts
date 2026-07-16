@@ -20,7 +20,7 @@ test("runTurn sends prompt + Enter, then resolves with last_assistant_message", 
       last_assistant_message: "hello",
     } as any;
     bus.emit(stop);
-  }, 50);
+  }, 400); // after sendPrompt's 250ms pre-Enter gap so the send assertions below are meaningful
 
   const reply = await promise;
   expect(reply).toBe("hello");
@@ -35,7 +35,7 @@ test("runTurn uses loadBufferAndPaste for multi-line prompts (no truncation)", a
   const promise = runTurn(job, { tmux, bus, timeoutMs: 1_000 });
   setTimeout(() => {
     bus.emit({ hook_event_name: "Stop", session_id: "ml-1", last_assistant_message: "ok" } as any);
-  }, 25);
+  }, 400); // after sendPrompt's 250ms pre-Enter gap
   await promise;
   expect(tmux.calls.some(c => c.method === "loadBufferAndPaste" && c.args[1] === "line one\nline two")).toBe(true);
   expect(tmux.calls.some(c => c.method === "sendKeysLiteral")).toBe(false);
