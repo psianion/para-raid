@@ -6,7 +6,7 @@ export interface FakeTmuxCall {
   args: unknown[];
 }
 
-export function createFakeTmux(): TmuxAdapter & { calls: FakeTmuxCall[]; sessions: Set<string> } {
+export function createFakeTmux(): TmuxAdapter & { calls: FakeTmuxCall[]; sessions: Set<string>; paneOutput: string } {
   const calls: FakeTmuxCall[] = [];
   const sessions = new Set<string>();
 
@@ -14,9 +14,11 @@ export function createFakeTmux(): TmuxAdapter & { calls: FakeTmuxCall[]; session
     calls.push({ method, args });
   }
 
-  return {
+  const fake: TmuxAdapter & { calls: FakeTmuxCall[]; sessions: Set<string>; paneOutput: string } = {
     calls,
     sessions,
+    // Tests set this to script what capturePaneOutput returns.
+    paneOutput: "fake output",
     async newSession(name, cwd, command) { record("newSession", [name, cwd, command]); sessions.add(name); },
     async hasSession(name) { record("hasSession", [name]); return sessions.has(name); },
     async sendKeysLiteral(name, text) { record("sendKeysLiteral", [name, text]); },
@@ -26,6 +28,7 @@ export function createFakeTmux(): TmuxAdapter & { calls: FakeTmuxCall[]; session
     async sendCtrlC(name) { record("sendCtrlC", [name]); },
     async killSession(name) { record("killSession", [name]); sessions.delete(name); },
     async listPanePid(name) { record("listPanePid", [name]); return sessions.has(name) ? 12345 : null; },
-    async capturePaneOutput(name, lines) { record("capturePaneOutput", [name, lines]); return "fake output"; },
+    async capturePaneOutput(name, lines) { record("capturePaneOutput", [name, lines]); return fake.paneOutput; },
   };
+  return fake;
 }

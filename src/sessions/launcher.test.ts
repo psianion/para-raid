@@ -31,6 +31,37 @@ test("launcher creates tmux session and resolves on SessionStart", async () => {
   expect(tmux.calls[0].args[2]).toContain("--session-id 00000000-0000-4000-8000-000000000001");
 });
 
+test("launcher answers the bypass-permissions dialog when the pane shows it", async () => {
+  const tmux = createFakeTmux();
+  const bus = createEventBus();
+  tmux.paneOutput = "WARNING: Claude Code running in Bypass Permissions mode\n 1. No, exit\n 2. Yes, I accept\nEnter to confirm";
+
+  const promise = launchSession({
+    tmux, bus,
+    sessionId: "00000000-0000-4000-8000-000000000002",
+    tmuxName: "para-raid-dlg",
+    cwd: "/tmp/test",
+    timeoutMs: 6000,
+  });
+
+  // Poll interval is 1.5s — wait for two ticks, then confirm the accept keys.
+  await new Promise((r) => setTimeout(r, 3400));
+  const methods = tmux.calls.map((c) => c.method);
+  expect(methods).toContain("capturePaneOutput");
+  const acceptIdx = tmux.calls.findIndex((c) => c.method === "sendKeysLiteral" && c.args[1] === "2");
+  expect(acceptIdx).toBeGreaterThan(-1);
+  expect(tmux.calls.slice(acceptIdx + 1).some((c) => c.method === "sendEnter")).toBe(true);
+  // Accept fires exactly once even though the poll saw the dialog twice.
+  expect(tmux.calls.filter((c) => c.method === "sendKeysLiteral" && c.args[1] === "2")).toHaveLength(1);
+
+  bus.emit({
+    hook_event_name: "SessionStart",
+    session_id: "00000000-0000-4000-8000-000000000002",
+    cwd: "/tmp/test",
+  });
+  await promise;
+});
+
 test("launcher rejects on timeout", async () => {
   const tmux = createFakeTmux();
   const bus = createEventBus();
