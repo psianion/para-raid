@@ -27,7 +27,7 @@ test("launcher creates tmux session and resolves on SessionStart", async () => {
   expect(tmux.calls[0].method).toBe("newSession");
   expect(tmux.calls[0].args[0]).toBe("para-raid-abc");
   expect(tmux.calls[0].args[1]).toBe("/tmp/test");
-  expect(tmux.calls[0].args[2]).toContain("exec env -u ANTHROPIC_API_KEY claude");
+  expect(tmux.calls[0].args[2]).toContain("exec env -u ANTHROPIC_API_KEY IS_SANDBOX=1 claude");
   expect(tmux.calls[0].args[2]).toContain("--session-id 00000000-0000-4000-8000-000000000001");
 });
 
