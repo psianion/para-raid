@@ -51,12 +51,15 @@ export async function recycleSession(opts: RecycleOpts): Promise<string> {
     writeClaudeSettings(cwd, hookEventsPath, newId);
   }
 
+  // No timeoutMs override: the launcher default (120s) governs. Passing the
+  // recycle/close timeout (10-30s) here is the same silent override that
+  // killed healthy cold-boot launches in open-session — a cold relaunch takes
+  // as long as a cold launch.
   await launchSession({
     tmux, bus,
     sessionId: newId,
     tmuxName,
     cwd,
-    timeoutMs,
   });
   return newId;
 }
