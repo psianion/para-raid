@@ -12,7 +12,10 @@ export interface LaunchOpts {
 }
 
 export function launchSession(opts: LaunchOpts): Promise<void> {
-  const { tmux, bus, sessionId, tmuxName, cwd, timeoutMs = 30_000 } = opts;
+  // 120s: claude's cold boot on modest hardware (WSL2, first model-version
+  // check) measured ~46s — 30s was tuned on the VPS and killed healthy
+  // launches. A genuinely dead pane just fails slower; the watchdog covers it.
+  const { tmux, bus, sessionId, tmuxName, cwd, timeoutMs = 120_000 } = opts;
 
   return new Promise<void>(async (resolve, reject) => {
     const timer = setTimeout(
