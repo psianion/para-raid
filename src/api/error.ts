@@ -5,7 +5,7 @@ export type ApiErrorCode =
   | "paused"
   | "idempotency_replay"
   | "internal"
-  | "tmux_unhealthy"
+  | "worker_unhealthy"
   | "session_not_live"
   | "session_not_recovering"
   | "version_not_allowed"

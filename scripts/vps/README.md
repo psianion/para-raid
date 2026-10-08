@@ -1,8 +1,10 @@
 # para-raid — VPS runbook
 
 para-raid stays a **native** systemd `--user` service, never dockerized —
-it needs tmux, a subscription-authenticated `claude` CLI, and a unix socket
-its own SECURITY.md forbids exposing over TCP.
+it needs a subscription-authenticated `claude` CLI on the host and a unix
+socket its own SECURITY.md forbids exposing over TCP. Workers are child
+processes of the daemon, so a service restart ends them; every conversation
+is on disk and comes back through the adapter's `resume_session` call.
 
 For the whole-stack picture (scrypt + uxie + para-raid topology, secrets
 layout, disaster recovery order), see `scrypt/scripts/vps/STACK.md`.

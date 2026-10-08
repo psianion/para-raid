@@ -3,22 +3,23 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, chmod
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
-import { buildDoctorChecks, runDoctorChecks, checkClaudeLogin } from "./doctor";
+import { buildDoctorChecks, runDoctorChecks, checkClaudeLogin, installedClaudeVersion } from "./doctor";
 
 /** A 64-char hex secret (32 random bytes) for the bearer token / signing key. */
 export function genSecret(): string {
   return randomBytes(32).toString("hex");
 }
 
-/** Turn config.example.toml into a ready config: pin the claude version, and in
- *  the [auth]/[signing] sections only, flip mode and inject the secrets. Comments
- *  and every other section (incl. [adapters]) are preserved verbatim. */
+/** Turn config.example.toml into a ready config: pin the minimum claude version
+ *  to the one installed, and in the [auth]/[signing] sections only, flip mode
+ *  and inject the secrets. Comments and every other section (incl. [adapters])
+ *  are preserved verbatim. */
 export function renderConfig(example: string, opts: { version: string; token: string; secret: string }): string {
   let section = "";
   return example.split("\n").map((line) => {
     const m = line.match(/^\[([^\]]+)\]/);
     if (m) { section = m[1]; return line; }
-    if (/^allowed_versions\s*=/.test(line)) return `allowed_versions = ["${opts.version}"]`;
+    if (/^min_version\s*=/.test(line) && opts.version) return `min_version = "${opts.version}"`;
     if (section === "auth") {
       if (/^mode\s*=\s*"none"/.test(line)) return line.replace('"none"', '"bearer"');
       if (/^token\s*=\s*""/.test(line)) return line.replace('""', `"${opts.token}"`);
@@ -30,7 +31,10 @@ export function renderConfig(example: string, opts: { version: string; token: st
   }).join("\n");
 }
 
-/** The systemd --user unit, with the same hardening as the old install.sh. */
+/** The systemd --user unit. Workers are children of the daemon, so the default
+ *  control-group kill takes them down with it on stop/restart — that is the
+ *  intended behaviour: conversations live on disk and come back via
+ *  resume_session. */
 export function renderSystemdUnit(opts: { configPath: string; repoDir: string; bunPath: string; home: string }): string {
   return `[Unit]
 Description=para-raid daemon
@@ -44,11 +48,9 @@ UnsetEnvironment=ANTHROPIC_API_KEY
 ExecStart=${opts.bunPath} run ${opts.repoDir}/src/daemon.ts
 Restart=on-failure
 RestartSec=2
-# KillMode=process: only the daemon dies on stop/restart. The default
-# (control-group) would also kill the tmux server and every claude worker in
-# it — making the A6 recovery flow (panes survive daemon restarts, boot
-# reconcile re-adopts them) structurally impossible.
-KillMode=process
+# Give the daemon time to close every worker's stdin and let claude exit on
+# its own before systemd escalates to SIGKILL.
+TimeoutStopSec=20
 MemoryHigh=85%
 MemoryMax=95%
 
@@ -65,11 +67,6 @@ async function run(args: string[]): Promise<number> {
   const p = Bun.spawn(args, { stdout: "inherit", stderr: "inherit" });
   return p.exited;
 }
-async function claudeVersion(): Promise<string> {
-  const p = Bun.spawn(["claude", "--version"], { stdout: "pipe", stderr: "pipe" });
-  const out = (await new Response(p.stdout).text()).trim();
-  return (await p.exited) === 0 ? (out.match(/\d+\.\d+\.\d+/)?.[0] ?? "") : "";
-}
 function configDir(): string {
   return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "para-raid");
 }
@@ -82,7 +79,7 @@ export async function runSetup(opts: { repoDir: string }): Promise<number> {
   const say = (s: string) => console.log(`\x1b[1m==>\x1b[0m ${s}`);
   const die = (s: string) => { console.error(`\x1b[31merror:\x1b[0m ${s}`); };
 
-  for (const bin of ["bun", "tmux", "jq", "python3", "claude"]) {
+  for (const bin of ["bun", "claude"]) {
     if (!(await which(bin))) { die(`missing prerequisite: ${bin} (install it and re-run)`); return 1; }
   }
   if (process.env.ANTHROPIC_API_KEY) { die("ANTHROPIC_API_KEY is set — unset it so workers use your Claude subscription, not the metered API"); return 1; }
@@ -95,19 +92,26 @@ export async function runSetup(opts: { repoDir: string }): Promise<number> {
   if (existsSync(configPath)) {
     say(`config exists, leaving it untouched: ${configPath}`);
   } else {
-    const version = await claudeVersion();
+    const version = (await installedClaudeVersion()) ?? "";
     const out = renderConfig(readFileSync(join(opts.repoDir, "config.example.toml"), "utf8"), { version, token: genSecret(), secret: genSecret() });
     writeFileSync(configPath, out);
     chmodSync(configPath, 0o600);
-    say(`wrote ${configPath} — pinned claude ${version}, bearer auth + hmac signing enabled (keep it private)`);
+    say(`wrote ${configPath} — min claude ${version || "(unchanged)"}, bearer auth + hmac signing enabled (keep it private)`);
   }
   const bundlesPath = join(dir, "mcp-bundles.toml");
-  if (!existsSync(bundlesPath)) { copyFileSync(join(opts.repoDir, "mcp-bundles.example.toml"), bundlesPath); say(`wrote ${bundlesPath}`); }
+  if (!existsSync(bundlesPath)) {
+    copyFileSync(join(opts.repoDir, "mcp-bundles.example.toml"), bundlesPath);
+    chmodSync(bundlesPath, 0o600); // copyFileSync keeps the source mode (777 on a DrvFs checkout)
+    say(`wrote ${bundlesPath}`);
+  }
 
   if (await which("systemctl")) {
     const ud = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "systemd/user");
     mkdirSync(ud, { recursive: true });
-    writeFileSync(join(ud, "para-raid.service"), renderSystemdUnit({ configPath, repoDir: opts.repoDir, bunPath: (await which("bun")) ?? "bun", home: homedir() }));
+    // process.execPath is the real bun binary; `which("bun")` from inside a
+    // running bun resolves to a per-process shim under /tmp that is gone by
+    // the time systemd starts the unit.
+    writeFileSync(join(ud, "para-raid.service"), renderSystemdUnit({ configPath, repoDir: opts.repoDir, bunPath: process.execPath, home: homedir() }));
     await run(["systemctl", "--user", "daemon-reload"]);
     say("installed systemd --user unit");
   } else {

@@ -1,42 +1,48 @@
+// src/sessions/closer.ts — stop a worker gracefully, then forcibly.
 import { rmSync } from "fs";
-import type { TmuxAdapter } from "../tmux/adapter";
-import type { EventBus } from "../events/bus";
+import type { WorkerRuntime } from "../worker/runtime";
 
 export interface CloseOpts {
-  tmux: TmuxAdapter;
-  bus: EventBus;
+  runtime: WorkerRuntime;
   sessionId: string;
-  tmuxName: string;
   workdir: string | null;       // pass null for recycler (skip cleanup)
-  timeoutMs?: number;           // default 10s for the SessionEnd wait
+  /** How long to wait after closing stdin before SIGTERM. Default 10s. */
+  timeoutMs?: number;
+  /** How long to wait after SIGTERM before SIGKILL. Default 3s. */
+  killGraceMs?: number;
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Closing stdin tells claude the conversation is over; it finishes any
+ * background work it started and exits on its own. That wait is bounded:
+ * after `timeoutMs` we SIGTERM (claude exits 143 promptly and runs its
+ * SessionEnd hooks), and after `killGraceMs` more we SIGKILL.
+ */
 export async function closeSession(opts: CloseOpts): Promise<void> {
-  const { tmux, bus, sessionId, tmuxName, workdir, timeoutMs = 10_000 } = opts;
+  const { runtime, sessionId, workdir, timeoutMs = 10_000, killGraceMs = 3_000 } = opts;
+  const handle = runtime.get(sessionId);
 
-  const sessionEnded = new Promise<void>((resolve) => {
-    bus.onSessionEnd((event) => {
-      if (event.session_id === sessionId) resolve();
-    });
-  });
-
-  await tmux.sendKeysLiteral(tmuxName, "/exit");
-  await tmux.sendEnter(tmuxName);
-
-  const timeout = new Promise<"timeout">((r) => setTimeout(() => r("timeout"), timeoutMs));
-  const race = await Promise.race([sessionEnded.then(() => "ok" as const), timeout]);
-
-  if (race === "timeout") {
-    await tmux.sendCtrlC(tmuxName);
-    await new Promise(r => setTimeout(r, 100));
-    await tmux.sendCtrlC(tmuxName);
-    await new Promise(r => setTimeout(r, 200));
-    if (await tmux.hasSession(tmuxName)) {
-      await tmux.killSession(tmuxName);
+  if (handle && handle.alive) {
+    handle.end();
+    if (await raceExit(handle.exited, timeoutMs) === "timeout") {
+      handle.kill("SIGTERM");
+      if (await raceExit(handle.exited, killGraceMs) === "timeout") {
+        handle.kill("SIGKILL");
+        await raceExit(handle.exited, 1_000);
+      }
     }
   }
 
   if (workdir !== null) {
     rmSync(workdir, { recursive: true, force: true });
   }
+}
+
+async function raceExit(exited: Promise<number | null>, ms: number): Promise<"exited" | "timeout"> {
+  return Promise.race([
+    exited.then(() => "exited" as const),
+    sleep(ms).then(() => "timeout" as const),
+  ]);
 }

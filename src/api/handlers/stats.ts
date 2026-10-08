@@ -35,11 +35,9 @@ async function defaultDuBytes(path: string): Promise<number | null> {
 export const __statsHooks: {
   psRssKb: (pid: number) => Promise<number | null>;
   duBytes: (path: string) => Promise<number | null>;
-  pidFor: (tmuxSession: string) => Promise<number | null>;
 } = {
   psRssKb: defaultPsRssKb,
   duBytes: defaultDuBytes,
-  pidFor: async () => null, // production wiring: tmux pane pid lookup; stub returns null until wired
 };
 
 export const statsHandler: Handler = async (_req, ctx) => {
@@ -52,13 +50,14 @@ export const statsHandler: Handler = async (_req, ctx) => {
     id: string;
     adapter_id: string;
     status: string;
+    pid: number | null;
     rss_mb: number | null;
     workdir_bytes: number | null;
   }> = [];
 
   let totalRssKb = 0;
   for (const r of rows) {
-    const pid = await __statsHooks.pidFor(r.id);
+    const pid = ctx.runtime.get(r.id)?.pid ?? null;
     let rssKb: number | null = null;
     if (pid !== null) {
       rssKb = await __statsHooks.psRssKb(pid);
@@ -69,6 +68,7 @@ export const statsHandler: Handler = async (_req, ctx) => {
       id: r.id,
       adapter_id: r.adapter_id,
       status: r.status,
+      pid,
       rss_mb: rssKb !== null ? Math.round((rssKb / 1024) * 100) / 100 : null,
       workdir_bytes: workdirBytes,
     });

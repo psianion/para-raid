@@ -1,49 +1,46 @@
-import { test, expect } from "bun:test";
+import { test, expect, afterEach } from "bun:test";
+import { existsSync, mkdirSync, rmSync } from "fs";
 import { closeSession } from "./closer";
-import { createFakeTmux } from "../tmux/fake";
+import { createFakeRuntime } from "../worker/fake";
 import { createEventBus } from "../events/bus";
 
-test("closer sends /exit then resolves on SessionEnd before timeout", async () => {
-  const tmux = createFakeTmux();
-  tmux.sessions.add("para-raid-x");
+const SID = "00000000-0000-4000-8000-00000000aaaa";
+const WD = "/tmp/pararaid-closer-test/wd";
+afterEach(() => rmSync("/tmp/pararaid-closer-test", { recursive: true, force: true }));
+
+test("closer closes stdin, waits for the worker to exit on its own, and removes the workdir", async () => {
   const bus = createEventBus();
+  const runtime = createFakeRuntime(bus);
+  runtime.spawn({ sessionId: SID, cwd: WD, mode: "new" });
+  mkdirSync(WD, { recursive: true });
 
-  const p = closeSession({
-    tmux, bus,
-    sessionId: "00000000-0000-4000-8000-00000000aaaa",
-    tmuxName: "para-raid-x",
-    workdir: "/tmp/pararaid-w34-closer/wd",
-    timeoutMs: 1000,
-  });
+  await closeSession({ runtime, sessionId: SID, workdir: WD, timeoutMs: 1000 });
 
-  setTimeout(() => bus.emit({
-    hook_event_name: "SessionEnd",
-    session_id: "00000000-0000-4000-8000-00000000aaaa",
-    cwd: "/tmp",
-  }), 50);
-
-  await p;
-  const sentExit = tmux.calls.some(c => c.method === "sendKeysLiteral" && c.args[1] === "/exit");
-  expect(sentExit).toBe(true);
-  const killed = tmux.calls.some(c => c.method === "killSession");
-  expect(killed).toBe(false);
+  const w = runtime.workers.get(SID)!;
+  expect(w.ended).toBe(true);
+  expect(w.killed).toEqual([]);
+  expect(w.alive).toBe(false);
+  expect(existsSync(WD)).toBe(false);
 });
 
-test("closer escalates to Ctrl-C and kill-session if SessionEnd never arrives", async () => {
-  const tmux = createFakeTmux();
-  tmux.sessions.add("para-raid-y");
+test("closer escalates to SIGTERM when the worker ignores stdin close", async () => {
   const bus = createEventBus();
+  const runtime = createFakeRuntime(bus);
+  runtime.exitOnEnd = false;
+  runtime.spawn({ sessionId: SID, cwd: WD, mode: "new" });
 
-  await closeSession({
-    tmux, bus,
-    sessionId: "00000000-0000-4000-8000-00000000bbbb",
-    tmuxName: "para-raid-y",
-    workdir: "/tmp/pararaid-w34-closer/wd2",
-    timeoutMs: 200,
-  });
+  await closeSession({ runtime, sessionId: SID, workdir: null, timeoutMs: 100, killGraceMs: 100 });
 
-  const sentCtrlC = tmux.calls.filter(c => c.method === "sendCtrlC").length;
-  const killed = tmux.calls.some(c => c.method === "killSession");
-  expect(sentCtrlC).toBeGreaterThanOrEqual(2);
-  expect(killed).toBe(true);
+  const w = runtime.workers.get(SID)!;
+  expect(w.ended).toBe(true);
+  expect(w.killed).toEqual(["SIGTERM"]);
+  expect(w.alive).toBe(false);
+});
+
+test("closer is a no-op for a session with no worker (still cleans the workdir)", async () => {
+  const bus = createEventBus();
+  const runtime = createFakeRuntime(bus);
+  mkdirSync(WD, { recursive: true });
+  await closeSession({ runtime, sessionId: SID, workdir: WD, timeoutMs: 100 });
+  expect(existsSync(WD)).toBe(false);
 });

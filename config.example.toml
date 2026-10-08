@@ -1,23 +1,28 @@
 # para-raid example config — copy to ~/.config/para-raid/config.toml and edit.
-# Every key here is required (Zod will reject missing fields).
-# Verified against spec §8 on 2026-04-25.
-# Path expansion ($XDG_RUNTIME_DIR, ~) is the daemon's responsibility (Wave 7);
-# Wave 1 doctor shim accepts only literal absolute paths.
+# `para-raid setup` does this for you and fills in the secrets.
+# Path expansion ($XDG_RUNTIME_DIR, ~) is the daemon's responsibility.
 
 [daemon]
 socket_path = "$XDG_RUNTIME_DIR/para-raid.sock"
 data_dir = "~/.local/state/para-raid"
 
 [claude]
-allowed_versions = ["2.1.109", "2.1.119"]
-# Optional shell prep run before launching claude in each tmux pane. Leave empty
+# Workers are `claude -p --input-format stream-json` child processes. Any
+# build from 2.1.259 on has the headless surface they drive; `para-raid setup`
+# pins this to whatever is installed, and `para-raid doctor` checks it.
+min_version = "2.1.259"
+# Optional shell prep run before launching claude for each worker. Leave empty
 # if `claude` is already on PATH. nvm users: env_setup = "source ~/.nvm/nvm.sh"
 env_setup = ""
+# Optional model alias or name for every worker (`--model`). Empty = claude's default.
+model = ""
+# Extra CLI args appended to every worker launch, e.g. ["--effort", "high"].
+extra_args = []
 
 [concurrency]
 max_concurrent_turns = 3
 max_total_sessions = 10
-turn_timeout_ms = 300000          # max wait for a turn's Stop event (5 min)
+turn_timeout_ms = 300000          # max wait for a turn's result (5 min)
 
 [recovery]
 grace_window_ms = 600000          # 10 min
@@ -27,9 +32,11 @@ retry_window_ms = 600000          # 10 min
 backoff_ms = [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000, 60000]
 
 [limit]
-# Verified 2026-04-25 against @anthropic-ai/claude-code 2.1.119
-# (extracted via `strings` on the bundled native binary).
-# Source: jZ_() composes warnings; wZ_() composes rejected/hit messages.
+# claude reports its own quota state after every turn; when it is anything
+# other than "allowed" the daemon pauses itself before the next turn fails.
+pause_on_rate_limit = true
+# Belt and braces: a reply whose tail matches this pattern also pauses the
+# daemon. Verified 2026-04-25 against @anthropic-ai/claude-code 2.1.119.
 warning_regex = '''(?i)(approaching\s+(your\s+)?(session|weekly|opus|sonnet|(extra\s+)?usage)\s+limit|you're\s+close\s+to\s+your\s+(extra\s+usage\s+spending\s+)?(usage\s+)?limit|you've\s+(hit|used\s+\d+%\s+of)\s+your\s+(session|weekly|opus|sonnet|(extra\s+)?usage)?\s*limit|now\s+using\s+(extra\s+usage|your\s+usage\s+allocation))'''
 
 [observability]
@@ -38,13 +45,13 @@ ram_refuse_pct = 90
 stats_interval_ms = 30000
 
 [auth]
-mode = "none"   # "none" | "bearer" | "mtls". install.sh flips this to "bearer".
-token = ""      # GLOBAL/ADMIN bearer secret; install.sh generates one. Grants daemon-wide
+mode = "none"   # "none" | "bearer" | "mtls". `para-raid setup` flips this to "bearer".
+token = ""      # GLOBAL/ADMIN bearer secret; setup generates one. Grants daemon-wide
                 # access (pause/resume, stats, status, all sessions). Keep this file private.
 
 [signing]
-mode = "none"   # "none" | "hmac". install.sh flips this to "hmac".
-secret = ""     # hmac secret; install.sh generates one. Keep this file private.
+mode = "none"   # "none" | "hmac". `para-raid setup` flips this to "hmac".
+secret = ""     # hmac secret; setup generates one. Keep this file private.
 
 [adapters.uxie]
 webhook_url = "http://localhost/api/webhooks/para-raid"

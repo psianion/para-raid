@@ -2,11 +2,28 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
 import { up as migration001 } from "./migrations/001_initial";
+import { up as migration002 } from "./migrations/002_drop_tmux_session";
 
 export interface Db {
   raw: Database;
   transaction: <T>(fn: () => T) => T;
   close: () => void;
+}
+
+const MIGRATIONS: Array<{ version: number; up: (db: Database) => void }> = [
+  { version: 1, up: migration001 },
+  { version: 2, up: migration002 },
+];
+
+function currentVersion(raw: Database): number {
+  try {
+    const row = raw.query<{ version: number | null }, []>(
+      "SELECT MAX(version) as version FROM schema_migrations"
+    ).get();
+    return row?.version ?? 0;
+  } catch {
+    return 0; // no schema_migrations table yet
+  }
 }
 
 export function createDb(path: string): Db {
@@ -22,15 +39,11 @@ export function createDb(path: string): Db {
   raw.run("PRAGMA synchronous=NORMAL");
   raw.run("PRAGMA foreign_keys=ON");
 
-  try {
-    const current = raw.query<{ version: number }, []>(
-      "SELECT MAX(version) as version FROM schema_migrations"
-    ).get();
-    if (!current || current.version < 1) {
-      migration001(raw);
-    }
-  } catch {
-    migration001(raw);
+  let version = currentVersion(raw);
+  for (const m of MIGRATIONS) {
+    if (m.version <= version) continue;
+    raw.transaction(() => m.up(raw))();
+    version = m.version;
   }
 
   return {

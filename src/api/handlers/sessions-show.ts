@@ -7,7 +7,6 @@ interface SessionRow {
   adapter_id: string;
   adapter_ref: string;
   status: string;
-  tmux_session: string;
   cwd: string;
   mcp_bundle: string;
   webhook_url: string;
@@ -33,7 +32,7 @@ export const sessionsShowHandler: Handler = async (_req, ctx, params) => {
   if (!id) return errorResponse(400, "invalid_request", "missing session id", ctx.requestId);
 
   const sess = ctx.db.raw.query<SessionRow, [string]>(
-    `SELECT id, adapter_id, adapter_ref, status, tmux_session, cwd, mcp_bundle, webhook_url,
+    `SELECT id, adapter_id, adapter_ref, status, cwd, mcp_bundle, webhook_url,
             created_at, updated_at, last_turn_at, recovery_expires_at
      FROM sessions WHERE id = ?`,
   ).get(id) as SessionRow | null;
@@ -45,11 +44,13 @@ export const sessionsShowHandler: Handler = async (_req, ctx, params) => {
      FROM turns WHERE session_id = ? ORDER BY created_at DESC LIMIT 1`,
   ).get(id) as TurnRow | null;
 
+  const worker = ctx.runtime.get(id);
   const transcriptPath = findTranscriptForCwd(sess.cwd);
 
   return jsonResponse(200, {
     session: sess,
     latest_turn: latestTurn,
+    worker: { alive: worker?.alive ?? false, pid: worker?.pid ?? null },
     transcript_path: transcriptPath,
   });
 };

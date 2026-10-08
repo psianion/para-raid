@@ -4,8 +4,9 @@
 # uxie adapter's webhook because the session is opened with uxie's identity.
 #
 # Constraints this script designs around (verified against daemon code):
-# - adapter_ref must be unique per night: tmux names hash the ref, and a
-#   surviving pane with the same name makes the launch die silently at 30s.
+# - adapter_ref must be unique per night: the daemon allows one active
+#   session per (adapter, ref) and reclaims a recovering one instead of
+#   opening fresh.
 # - Nothing auto-closes idle sessions; we close last night's explicitly or
 #   max_total_sessions fills up in ~10 nights.
 # - Daemon may be quota-paused (503) or down; both notify instead of failing

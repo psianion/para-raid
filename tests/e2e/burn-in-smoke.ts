@@ -23,8 +23,15 @@ function bearer(token: string): Record<string, string> {
 
 interface Webhook { event_type: string; session_id: string; payload: any; ts: number }
 const captured: Webhook[] = [];
-const webhookPort = 19500 + Math.floor(Math.random() * 100);
-const webhookUrl = `http://127.0.0.1:${webhookPort}/hook`;
+// The daemon delivers to the adapter's CONFIGURED webhook_url (the body's is
+// ignored), so the receiver must listen where [adapters.burn-in] points.
+const configuredUrl = cfg.adapters?.["burn-in"]?.webhook_url;
+if (!configuredUrl) {
+  console.error("config needs an [adapters.burn-in] entry, e.g.\n  webhook_url = \"http://127.0.0.1:19555/hook\"\n  token = \"<openssl rand -hex 32>\"");
+  process.exit(2);
+}
+const webhookPort = Number(new URL(configuredUrl).port || 80);
+const webhookUrl = configuredUrl;
 
 const webhookServer = Bun.serve({
   port: webhookPort, hostname: "127.0.0.1",

@@ -6,7 +6,6 @@ interface SessionRow {
   adapter_id: string;
   adapter_ref: string;
   status: string;
-  tmux_session: string;
   cwd: string;
   created_at: number;
   updated_at: number;
@@ -49,7 +48,7 @@ export const sessionsListHandler: Handler = async (req, ctx) => {
   if (status)          { where.push("status = ?");     args.push(status); }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-  const sql = `SELECT id, adapter_id, adapter_ref, status, tmux_session, cwd,
+  const sql = `SELECT id, adapter_id, adapter_ref, status, cwd,
                       created_at, updated_at, last_turn_at, recovery_expires_at
                FROM sessions ${whereSql}
                ORDER BY created_at DESC

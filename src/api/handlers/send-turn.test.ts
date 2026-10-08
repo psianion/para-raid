@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from "fs";
 import { sendTurnHandler } from "./send-turn";
 import { createDb } from "../../db";
 import { createEventBus } from "../../events/bus";
-import { createFakeTmux } from "../../tmux/fake";
+import { createFakeRuntime } from "../../worker/fake";
 import { createModeController } from "../../limit/mode-controller";
 import { createDispatcher } from "../../sessions/dispatcher";
 import type { HandlerCtx } from "../router";
@@ -18,15 +18,14 @@ afterEach(() => { rmSync(TMP, { recursive: true, force: true }); });
 function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
   const db = createDb(":memory:");
   const bus = createEventBus();
-  const tmux = createFakeTmux();
+  const runtime = createFakeRuntime(bus);
   const modeController = createModeController();
   const dispatcher = createDispatcher({
     maxConcurrentTurns: 3,
-    tmux,
     onDispatch: async () => "stub-reply",
   });
   const config = {
-    daemon: { data_dir: TMP, hook_events_path: `${TMP}/hook-events.jsonl`, socket_path: "/tmp/x.sock" },
+    daemon: { data_dir: TMP, socket_path: "/tmp/x.sock" },
     concurrency: { max_concurrent_turns: 3, max_total_sessions: 10 },
     recovery: { grace_window_ms: 600_000 },
     publisher: { retry_window_ms: 600_000, backoff_ms: [1000] },
@@ -35,9 +34,8 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
     adapters: { test: { webhook_url: "http://x/hook" } },
   } as unknown as ParaRaidConfig;
   return {
-    db, bus, tmux, modeController, dispatcher, config,
+    db, bus, runtime, modeController, dispatcher, config,
     logger: NOOP_LOGGER,
-    hookEventsPath: `${TMP}/hook-events.jsonl`,
     adapter_id: "test",
     ...overrides,
   };
@@ -46,9 +44,9 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
 function insertLiveSession(ctx: HandlerCtx, id: string): void {
   const now = Date.now();
   ctx.db.raw.run(
-    `INSERT INTO sessions (id, adapter_id, adapter_ref, status, tmux_session, cwd, mcp_bundle, webhook_url, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [id, "test", `ref-${id}`, "live", `tmx-${id}`, `${TMP}/cwd-${id}`, "", "http://x/hook", now, now],
+    `INSERT INTO sessions (id, adapter_id, adapter_ref, status, cwd, mcp_bundle, webhook_url, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [id, "test", `ref-${id}`, "live", `${TMP}/cwd-${id}`, "", "http://x/hook", now, now],
   );
 }
 
@@ -92,9 +90,9 @@ test("send_turn returns 404 session_not_live for unknown or non-live sessions", 
   // Insert a session in 'closed' state — must still be rejected.
   const closedId = "22222222-2222-4222-8222-222222222222";
   ctx.db.raw.run(
-    `INSERT INTO sessions (id, adapter_id, adapter_ref, status, tmux_session, cwd, mcp_bundle, webhook_url, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [closedId, "test", "ref-closed", "closed", "tmx-c", `${TMP}/c`, "", "http://x/hook", Date.now(), Date.now()],
+    `INSERT INTO sessions (id, adapter_id, adapter_ref, status, cwd, mcp_bundle, webhook_url, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [closedId, "test", "ref-closed", "closed", `${TMP}/c`, "", "http://x/hook", Date.now(), Date.now()],
   );
 
   const req = new Request("http://x/v1/send_turn", {

@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from "fs";
 import { sessionsListHandler } from "./sessions-list";
 import { createDb } from "../../db";
 import { createEventBus } from "../../events/bus";
-import { createFakeTmux } from "../../tmux/fake";
+import { createFakeRuntime } from "../../worker/fake";
 import { createModeController } from "../../limit/mode-controller";
 import { createDispatcher } from "../../sessions/dispatcher";
 import type { HandlerCtx } from "../router";
@@ -18,13 +18,13 @@ afterEach(() => { rmSync(TMP, { recursive: true, force: true }); });
 function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
   const db = createDb(":memory:");
   const bus = createEventBus();
-  const tmux = createFakeTmux();
+  const runtime = createFakeRuntime(bus);
   const modeController = createModeController();
-  const dispatcher = createDispatcher({ maxConcurrentTurns: 3, tmux, onDispatch: async () => "stub" });
+  const dispatcher = createDispatcher({ maxConcurrentTurns: 3, onDispatch: async () => "stub" });
   const config = { daemon: { socket_path: "/tmp/x.sock", data_dir: TMP }, adapters: {} } as unknown as ParaRaidConfig;
   return {
-    db, bus, tmux, modeController, dispatcher, config,
-    logger: NOOP_LOGGER, hookEventsPath: `${TMP}/hook-events.jsonl`,
+    db, bus, runtime, modeController, dispatcher, config,
+    logger: NOOP_LOGGER,
     adapter_id: "__admin__",
     ...overrides,
   };
@@ -32,9 +32,9 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
 
 function insertSess(ctx: HandlerCtx, id: string, adapter_id: string, status: string, created_at: number): void {
   ctx.db.raw.run(
-    `INSERT INTO sessions (id, adapter_id, adapter_ref, status, tmux_session, cwd, mcp_bundle, webhook_url, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [id, adapter_id, `ref-${id}`, status, `tmx-${id}`, `/tmp/cwd-${id}`, "", "http://x/hook", created_at, created_at],
+    `INSERT INTO sessions (id, adapter_id, adapter_ref, status, cwd, mcp_bundle, webhook_url, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [id, adapter_id, `ref-${id}`, status, `/tmp/cwd-${id}`, "", "http://x/hook", created_at, created_at],
   );
 }
 

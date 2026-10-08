@@ -1,99 +1,56 @@
 import { test, expect } from "bun:test";
 import { launchSession } from "./launcher";
-import { createFakeTmux } from "../tmux/fake";
+import { createFakeRuntime } from "../worker/fake";
 import { createEventBus } from "../events/bus";
 
-test("launcher creates tmux session and resolves on SessionStart", async () => {
-  const tmux = createFakeTmux();
+const SID = "00000000-0000-4000-8000-000000000001";
+
+test("launcher spawns a new worker and resolves once it has stayed alive through the grace window", async () => {
   const bus = createEventBus();
+  const runtime = createFakeRuntime(bus);
 
-  const promise = launchSession({
-    tmux, bus,
-    sessionId: "00000000-0000-4000-8000-000000000001",
-    tmuxName: "para-raid-abc",
-    cwd: "/tmp/test",
-    timeoutMs: 5000,
-  });
-
-  setTimeout(() => {
-    bus.emit({
-      hook_event_name: "SessionStart",
-      session_id: "00000000-0000-4000-8000-000000000001",
-      cwd: "/tmp/test",
-    });
-  }, 100);
-
-  await promise;
-  expect(tmux.calls[0].method).toBe("newSession");
-  expect(tmux.calls[0].args[0]).toBe("para-raid-abc");
-  expect(tmux.calls[0].args[1]).toBe("/tmp/test");
-  expect(tmux.calls[0].args[2]).toContain("exec env -u ANTHROPIC_API_KEY IS_SANDBOX=1 claude");
-  expect(tmux.calls[0].args[2]).toContain("--session-id 00000000-0000-4000-8000-000000000001");
+  const t0 = Date.now();
+  const handle = await launchSession({ runtime, bus, sessionId: SID, cwd: "/tmp/test", mcpConfigPath: "/tmp/test/.mcp.json", readyGraceMs: 60 });
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(50);
+  expect(handle.sessionId).toBe(SID);
+  expect(handle.alive).toBe(true);
+  expect(runtime.spawns).toHaveLength(1);
+  expect(runtime.spawns[0]).toEqual({ sessionId: SID, cwd: "/tmp/test", mode: "new", mcpConfigPath: "/tmp/test/.mcp.json" });
 });
 
-test("launcher answers the bypass-permissions dialog when the pane shows it", async () => {
-  const tmux = createFakeTmux();
+test("launcher resumes an existing conversation when asked", async () => {
   const bus = createEventBus();
-  tmux.paneOutput = "WARNING: Claude Code running in Bypass Permissions mode\n 1. No, exit\n 2. Yes, I accept\nEnter to confirm";
-
-  const promise = launchSession({
-    tmux, bus,
-    sessionId: "00000000-0000-4000-8000-000000000002",
-    tmuxName: "para-raid-dlg",
-    cwd: "/tmp/test",
-    timeoutMs: 6000,
-  });
-
-  // Poll interval is 1.5s — wait for two ticks, then confirm the accept keys.
-  await new Promise((r) => setTimeout(r, 3400));
-  const methods = tmux.calls.map((c) => c.method);
-  expect(methods).toContain("capturePaneOutput");
-  const acceptIdx = tmux.calls.findIndex((c) => c.method === "sendKeysLiteral" && c.args[1] === "2");
-  expect(acceptIdx).toBeGreaterThan(-1);
-  expect(tmux.calls.slice(acceptIdx + 1).some((c) => c.method === "sendEnter")).toBe(true);
-  // Accept fires exactly once even though the poll saw the dialog twice.
-  expect(tmux.calls.filter((c) => c.method === "sendKeysLiteral" && c.args[1] === "2")).toHaveLength(1);
-
-  bus.emit({
-    hook_event_name: "SessionStart",
-    session_id: "00000000-0000-4000-8000-000000000002",
-    cwd: "/tmp/test",
-  });
-  await promise;
+  const runtime = createFakeRuntime(bus);
+  await launchSession({ runtime, bus, sessionId: SID, cwd: "/tmp/test", resume: true, readyGraceMs: 10 });
+  expect(runtime.spawns[0].mode).toBe("resume");
 });
 
-test("launcher rejects on timeout", async () => {
-  const tmux = createFakeTmux();
+test("launcher rejects when the worker exits inside the grace window", async () => {
   const bus = createEventBus();
-
+  const runtime = createFakeRuntime(bus);
+  runtime.exitOnSpawn = 1;
   await expect(
-    launchSession({
-      tmux, bus,
-      sessionId: "00000000-0000-4000-8000-000000000002",
-      tmuxName: "pr-x",
-      cwd: "/tmp",
-      timeoutMs: 200,
-    })
-  ).rejects.toThrow("timeout");
+    launchSession({ runtime, bus, sessionId: SID, cwd: "/tmp", readyGraceMs: 500 })
+  ).rejects.toThrow(/exited before ready/);
 });
 
-test("launcher ignores SessionStart for a different session_id", async () => {
-  const tmux = createFakeTmux();
+test("launcher rejects when spawn itself throws", async () => {
   const bus = createEventBus();
+  const runtime = createFakeRuntime(bus);
+  runtime.failNextSpawn = new Error("claude: command not found");
+  await expect(
+    launchSession({ runtime, bus, sessionId: SID, cwd: "/tmp", readyGraceMs: 10 })
+  ).rejects.toThrow(/command not found/);
+});
 
-  const promise = launchSession({
-    tmux, bus,
-    sessionId: "00000000-0000-4000-8000-000000000003",
-    tmuxName: "pr-y",
-    cwd: "/tmp",
-    timeoutMs: 400,
-  });
-
-  setTimeout(() => bus.emit({
-    hook_event_name: "SessionStart",
-    session_id: "wrong-id",
-    cwd: "/tmp",
-  }), 50);
-
-  await expect(promise).rejects.toThrow("timeout");
+test("launcher ignores an exit for a different session and unsubscribes after settle", async () => {
+  const bus = createEventBus();
+  const runtime = createFakeRuntime(bus);
+  const baseline = bus.handlerCount();
+  const p = launchSession({ runtime, bus, sessionId: SID, cwd: "/tmp", readyGraceMs: 80 });
+  setTimeout(() => bus.emit({ type: "exit", session_id: "00000000-0000-4000-8000-00000000ffff", code: 1, signal: null }), 10);
+  await p;
+  // The fake worker registers its own turnText subscriber; everything the
+  // launcher added is gone.
+  expect(bus.handlerCount()).toBe(baseline + 1);
 });

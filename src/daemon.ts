@@ -7,13 +7,12 @@ import { loadBundles } from "./bundles/loader";
 import { checkClaudeLogin, checkAuthSecurity, checkSigningSecurity } from "./bin/doctor";
 import { createDb } from "./db";
 import { createEventBus } from "./events/bus";
-import { createRealTmux } from "./tmux/real";
-import { startTailer } from "./events/tailer";
+import { createClaudeRuntime } from "./worker/claude";
 import { createDispatcher } from "./sessions/dispatcher";
 import { startPublisher } from "./publisher/outbox";
 import { createModeController } from "./limit/mode-controller";
 import { startRamValve } from "./limit/ram-valve";
-import { compileWarningRegex, pauseIfLimitReached, watchStopEventsForWarning } from "./limit/warning-scanner";
+import { compileWarningRegex, pauseIfLimitReached, watchRateLimitEvents, watchResultEventsForWarning } from "./limit/warning-scanner";
 import { reconcileOnBoot } from "./recovery/boot";
 import { startGraceTimer } from "./recovery/grace";
 import { startWatchdog } from "./recovery/watchdog";
@@ -22,7 +21,7 @@ import { routes } from "./api/routes";
 import { createLogger } from "./logger";
 import { runTurn } from "./sessions/turn-runner";
 import { enqueueWebhook } from "./publisher/enqueue";
-import type { HookEvent } from "./types";
+import type { WorkerEvent } from "./worker/runtime";
 
 async function main() {
   const log = createLogger();
@@ -30,11 +29,8 @@ async function main() {
   const config = loadConfig(configPath);
   log.info("daemon.boot.start", { config_path: configPath, socket: config.daemon.socket_path });
 
-  // Propagate the optional claude launch prep to the in-process command builder.
-  if (config.claude.env_setup) process.env.PARARAID_CLAUDE_ENV_SETUP = config.claude.env_setup;
-
-  // Boot gate: without a logged-in claude, every session would die at the
-  // SessionStart timeout. Fail fast with an actionable message instead.
+  // Boot gate: without a logged-in claude, every session would die at launch.
+  // Fail fast with an actionable message instead.
   const login = await checkClaudeLogin();
   if (!login.pass) {
     log.error("daemon.boot.fail", { reason: "claude_not_logged_in", detail: login.msg });
@@ -58,12 +54,16 @@ async function main() {
   }
 
   const dbPath = join(config.daemon.data_dir, "para-raid.db");
-  const hookEventsPath = join(config.daemon.data_dir, "hook-events.jsonl");
   const bundlesPath = join(dirname(configPath), "mcp-bundles.toml");
   const bundles = existsSync(bundlesPath) ? loadBundles(bundlesPath) : [];
   const db = createDb(dbPath);
   const bus = createEventBus();
-  const tmux = createRealTmux();
+  const runtime = createClaudeRuntime({
+    bus, logger: log,
+    envSetup: config.claude.env_setup,
+    model: config.claude.model || undefined,
+    extraArgs: config.claude.extra_args,
+  });
   const modeController = createModeController();
   // Quota self-pause: scan each completed turn's reply for claude's usage-limit
   // warnings and pause the daemon so it stops spending quota. (Empty pattern → off.)
@@ -71,40 +71,41 @@ async function main() {
 
   const dispatcher = createDispatcher({
     maxConcurrentTurns: config.concurrency.max_concurrent_turns,
-    tmux,
     onDispatch: async (job) => {
-      const reply = await runTurn(job, { tmux, bus, timeoutMs: config.concurrency.turn_timeout_ms });
+      const reply = await runTurn(job, { runtime, bus, timeoutMs: config.concurrency.turn_timeout_ms });
       pauseIfLimitReached(reply, limitRegex, modeController, log);
       return reply;
     },
   });
 
-  const ctx = { db, bus, tmux, logger: log, config, modeController, dispatcher, hookEventsPath, bundles };
+  const ctx = { db, bus, runtime, logger: log, config, modeController, dispatcher, bundles };
 
   await reconcileOnBoot(ctx);
 
-  const tailer = startTailer(hookEventsPath, db, bus);
+  // Also scan result events directly: the onDispatch scan above only sees
+  // dispatcher-run turns and misses a result that lands after a turn timeout.
+  watchResultEventsForWarning(bus, limitRegex, modeController, log);
+  // claude tells us its quota state after every turn; a non-allowed status
+  // pauses before the next turn fails.
+  if (config.limit.pause_on_rate_limit) watchRateLimitEvents(bus, modeController, log);
 
-  // Also scan Stop hook events directly: the onDispatch scan above only sees
-  // dispatcher-run turns and misses a warning that lands after a turn timeout
-  // or from a session driven outside the dispatcher (Wave 9 carry-over).
-  watchStopEventsForWarning(bus, limitRegex, modeController, log);
-
-  // Fire a `tool_call` webhook for every PreToolUse hook event, so adapters can
-  // observe (not gate) each tool the session is about to run.
-  bus.subscribe((event: HookEvent) => {
-    if (event.hook_event_name !== "PreToolUse" || !event.session_id) return;
+  // Fire a `tool_call` webhook for every tool use the worker announces, so
+  // adapters can observe (not gate) each tool a session runs.
+  bus.subscribe((event: WorkerEvent) => {
+    if (event.type !== "assistant" || event.tool_uses.length === 0) return;
     const row = db.raw.query<{ adapter_id: string; webhook_url: string }, [string]>(
       "SELECT adapter_id, webhook_url FROM sessions WHERE id = ?",
     ).get(event.session_id) as { adapter_id: string; webhook_url: string } | null;
     if (!row || !row.webhook_url) return;
-    enqueueWebhook(db, {
-      eventType: "tool_call",
-      sessionId: event.session_id,
-      adapterId: row.adapter_id,
-      webhookUrl: row.webhook_url,
-      payload: { tool_name: event.tool_name, tool_input: event.tool_input },
-    });
+    for (const tu of event.tool_uses) {
+      enqueueWebhook(db, {
+        eventType: "tool_call",
+        sessionId: event.session_id,
+        adapterId: row.adapter_id,
+        webhookUrl: row.webhook_url,
+        payload: { tool_name: tu.name, tool_input: tu.input },
+      });
+    }
   });
 
   const publisher = startPublisher(db, config.publisher, log, config.signing);
@@ -132,7 +133,7 @@ async function main() {
     log.info("daemon.shutdown.start", { signal: sig });
     // 1) stop accepting new requests
     await apiServer.stop();
-    // 2) stop accepting new dispatches; in-flight turns may need to drain
+    // 2) stop accepting new dispatches
     dispatcher.stop();
     // 3) recovery timers
     ramValve.stop();
@@ -140,8 +141,16 @@ async function main() {
     grace.stop();
     // 4) publisher
     publisher.stop();
-    // 5) tailer LAST so in-flight Stop events still flow to runners
-    await tailer.stop();
+    // 5) workers: close stdin so each claude exits cleanly; whatever is still
+    //    alive after a short grace gets SIGTERM. Conversations are on disk and
+    //    come back through resume_session after the restart.
+    const workers = runtime.list();
+    for (const w of workers) w.end();
+    await Promise.race([
+      Promise.all(workers.map((w) => w.exited)),
+      new Promise((r) => setTimeout(r, 5_000)),
+    ]);
+    for (const w of workers) if (w.alive) w.kill("SIGTERM");
     db.close();
     if (existsSync(config.daemon.socket_path)) rmSync(config.daemon.socket_path);
     log.info("daemon.shutdown.done", {});

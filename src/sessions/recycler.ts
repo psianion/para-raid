@@ -1,65 +1,41 @@
+// src/sessions/recycler.ts — replace a session's worker with a fresh conversation.
 import { randomUUID } from "crypto";
-import type { TmuxAdapter } from "../tmux/adapter";
+import { existsSync } from "fs";
+import { join } from "path";
 import type { EventBus } from "../events/bus";
+import type { WorkerRuntime } from "../worker/runtime";
 import { closeSession } from "./closer";
 import { launchSession } from "./launcher";
-import { writeClaudeSettings } from "../workdir";
 
 export interface RecycleOpts {
-  tmux: TmuxAdapter;
+  runtime: WorkerRuntime;
   bus: EventBus;
   oldSessionId: string;
-  tmuxName: string;
   cwd: string;
+  /** Close timeout for the old worker. Default 10s. */
   timeoutMs?: number;
-  /**
-   * If provided, recycleSession rewrites `<cwd>/.claude/settings.json` with
-   * the new session id before relaunching, so hook events from the recycled
-   * claude are tagged with the new id. Without this, hooks would still emit
-   * the OLD para-raid id (the workdir's settings.json was written at first
-   * launch). Daemon callers should always pass this.
-   */
-  hookEventsPath?: string;
 }
 
 /**
- * Closes the existing claude (no workdir cleanup), generates a fresh UUID,
- * then launches a new claude in the same tmux pane reusing the workdir.
- * Returns the new session_id.
+ * Closes the existing worker (keeping the workdir), then launches a new
+ * conversation in the same workdir under a fresh UUID. The rendered
+ * `.mcp.json`, if any, is reused. Returns the new session_id.
  *
- * tmux session reaping lags a beat behind the SessionEnd hook, so we
- * defensively kill any leftover pane before relaunch (avoids "duplicate
- * session" from `tmux new-session`).
+ * No launch timeout override: the launcher default (120s) governs — a cold
+ * relaunch takes as long as a cold launch.
  */
 export async function recycleSession(opts: RecycleOpts): Promise<string> {
-  const { tmux, bus, oldSessionId, tmuxName, cwd, timeoutMs = 10_000, hookEventsPath } = opts;
+  const { runtime, bus, oldSessionId, cwd, timeoutMs = 10_000 } = opts;
 
-  await closeSession({
-    tmux, bus,
-    sessionId: oldSessionId,
-    tmuxName,
-    workdir: null,
-    timeoutMs,
-  });
-
-  if (await tmux.hasSession(tmuxName)) {
-    await tmux.killSession(tmuxName);
-  }
+  await closeSession({ runtime, sessionId: oldSessionId, workdir: null, timeoutMs });
 
   const newId = randomUUID();
-  if (hookEventsPath) {
-    writeClaudeSettings(cwd, hookEventsPath, newId);
-  }
-
-  // No timeoutMs override: the launcher default (120s) governs. Passing the
-  // recycle/close timeout (10-30s) here is the same silent override that
-  // killed healthy cold-boot launches in open-session — a cold relaunch takes
-  // as long as a cold launch.
+  const mcp = join(cwd, ".mcp.json");
   await launchSession({
-    tmux, bus,
+    runtime, bus,
     sessionId: newId,
-    tmuxName,
     cwd,
+    mcpConfigPath: existsSync(mcp) ? mcp : undefined,
   });
   return newId;
 }

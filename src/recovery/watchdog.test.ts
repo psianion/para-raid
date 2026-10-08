@@ -1,7 +1,8 @@
 import { test, expect, beforeEach } from "bun:test";
 import { mkdirSync, rmSync, existsSync } from "fs";
 import { createDb } from "../db";
-import { createFakeTmux } from "../tmux/fake";
+import { createEventBus } from "../events/bus";
+import { createFakeRuntime, type FakeRuntime } from "../worker/fake";
 import type { Logger } from "../logger";
 import { watchdogTick, type WatchdogCtx } from "./watchdog";
 
@@ -18,43 +19,23 @@ beforeEach(() => {
   mkdirSync(TMP, { recursive: true });
 });
 
-function makeCtx(): WatchdogCtx & { tmux: ReturnType<typeof createFakeTmux> } {
+function makeCtx(): WatchdogCtx & { runtime: FakeRuntime } {
   const db = createDb(":memory:");
-  const tmux = createFakeTmux();
-  return { db, tmux, logger: NOOP_LOGGER };
+  const runtime = createFakeRuntime(createEventBus());
+  return { db, runtime, logger: NOOP_LOGGER };
 }
 
-function insertLiveSession(
-  ctx: WatchdogCtx,
-  id: string,
-  tmuxName: string,
-  cwd: string
-): void {
+function insertLiveSession(ctx: WatchdogCtx, id: string, cwd: string): void {
   const now = Date.now();
   ctx.db.raw.run(
     `INSERT INTO sessions
-       (id, adapter_id, adapter_ref, tmux_session, cwd, mcp_bundle, webhook_url, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      id,
-      "test-adapter",
-      `ref-${id}`,
-      tmuxName,
-      cwd,
-      "{}",
-      "http://localhost/webhook",
-      "live",
-      now,
-      now,
-    ]
+       (id, adapter_id, adapter_ref, cwd, mcp_bundle, webhook_url, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, "test-adapter", `ref-${id}`, cwd, "{}", "http://localhost/webhook", "live", now, now]
   );
 }
 
-function insertTurn(
-  ctx: WatchdogCtx,
-  sessionId: string,
-  dispatchedAt: number
-): void {
+function insertTurn(ctx: WatchdogCtx, sessionId: string, dispatchedAt: number): void {
   ctx.db.raw.run(
     `INSERT INTO turns (id, session_id, status, prompt_sha256, created_at, dispatched_at, completed_at)
      VALUES (?, ?, 'dispatching', 'sha', ?, ?, NULL)`,
@@ -62,16 +43,14 @@ function insertTurn(
   );
 }
 
-test("watchdog: reaps live session with a turn stuck dispatching past threshold", async () => {
+test("watchdog: reaps a live session with a turn stuck dispatching past threshold, and kills its worker", async () => {
   const ctx = makeCtx();
   const sessionId = "00000000-0000-4000-8000-00000000dddd";
-  const tmuxName = "para-raid-watchdog-stuck";
   const workdir = `${TMP}/wd-stuck`;
   mkdirSync(workdir, { recursive: true });
 
-  // tier-0 passes: tmux alive + pid valid.
-  ctx.tmux.sessions.add(tmuxName);
-  insertLiveSession(ctx, sessionId, tmuxName, workdir);
+  ctx.runtime.spawn({ sessionId, cwd: workdir, mode: "new" }); // tier-0 passes
+  insertLiveSession(ctx, sessionId, workdir);
   insertTurn(ctx, sessionId, Date.now() - 11 * 60_000); // dispatching 11 min ago
 
   await watchdogTick(ctx);
@@ -91,17 +70,17 @@ test("watchdog: reaps live session with a turn stuck dispatching past threshold"
   expect(JSON.parse(events[0]!.payload_json).reason).toBe("stuck_turn");
 
   expect(existsSync(workdir)).toBe(false);
+  expect(ctx.runtime.workers.get(sessionId)!.killed).toContain("SIGTERM");
 });
 
-test("watchdog: leaves live session with a recently-dispatched turn alone", async () => {
+test("watchdog: leaves a live session with a recently-dispatched turn alone", async () => {
   const ctx = makeCtx();
   const sessionId = "00000000-0000-4000-8000-00000000eeee";
-  const tmuxName = "para-raid-watchdog-fresh";
   const workdir = `${TMP}/wd-fresh`;
   mkdirSync(workdir, { recursive: true });
 
-  ctx.tmux.sessions.add(tmuxName);
-  insertLiveSession(ctx, sessionId, tmuxName, workdir);
+  ctx.runtime.spawn({ sessionId, cwd: workdir, mode: "new" });
+  insertLiveSession(ctx, sessionId, workdir);
   insertTurn(ctx, sessionId, Date.now() - 2 * 60_000); // dispatching 2 min ago
 
   await watchdogTick(ctx);
@@ -110,24 +89,18 @@ test("watchdog: leaves live session with a recently-dispatched turn alone", asyn
     .query<{ status: string }, [string]>("SELECT status FROM sessions WHERE id = ?")
     .get(sessionId);
   expect(row?.status).toBe("live");
-
-  const events = ctx.db.raw
-    .query<{ event_type: string }, []>("SELECT event_type FROM webhook_queue")
-    .all();
-  expect(events).toHaveLength(0);
-
+  expect(ctx.db.raw.query<{ event_type: string }, []>("SELECT event_type FROM webhook_queue").all()).toHaveLength(0);
   expect(existsSync(workdir)).toBe(true);
 });
 
-test("watchdog: marks live session as dead when tmux is gone", async () => {
+test("watchdog: marks a live session dead when its worker process is gone", async () => {
   const ctx = makeCtx();
   const sessionId = "00000000-0000-4000-8000-00000000aaaa";
-  const tmuxName = "para-raid-watchdog-gone";
   const workdir = `${TMP}/wd-gone`;
   mkdirSync(workdir, { recursive: true });
 
-  // tmux is empty — session_id not registered with the fake.
-  insertLiveSession(ctx, sessionId, tmuxName, workdir);
+  // No worker spawned for this session.
+  insertLiveSession(ctx, sessionId, workdir);
 
   await watchdogTick(ctx);
 
@@ -148,50 +121,18 @@ test("watchdog: marks live session as dead when tmux is gone", async () => {
   const payload = JSON.parse(events[0]!.payload_json);
   expect(payload.reason).toBe("external_kill");
   expect(payload.session_id).toBe(sessionId);
-
-  // workdir cleaned up
   expect(existsSync(workdir)).toBe(false);
 });
 
-test("watchdog: leaves healthy live session alone", async () => {
-  const ctx = makeCtx();
-  const sessionId = "00000000-0000-4000-8000-00000000bbbb";
-  const tmuxName = "para-raid-watchdog-healthy";
-  const workdir = `${TMP}/wd-healthy`;
-  mkdirSync(workdir, { recursive: true });
-
-  // Register tmux session in the fake — hasSession=true and listPanePid returns 12345.
-  ctx.tmux.sessions.add(tmuxName);
-  insertLiveSession(ctx, sessionId, tmuxName, workdir);
-
-  await watchdogTick(ctx);
-
-  const row = ctx.db.raw
-    .query<{ status: string }, [string]>("SELECT status FROM sessions WHERE id = ?")
-    .get(sessionId);
-  expect(row?.status).toBe("live");
-
-  const events = ctx.db.raw
-    .query<{ event_type: string }, []>("SELECT event_type FROM webhook_queue")
-    .all();
-  expect(events).toHaveLength(0);
-
-  // workdir still present
-  expect(existsSync(workdir)).toBe(true);
-});
-
-test("watchdog: marks live session as dead when listPanePid returns null", async () => {
+test("watchdog: marks a live session dead when its worker has exited", async () => {
   const ctx = makeCtx();
   const sessionId = "00000000-0000-4000-8000-00000000cccc";
-  const tmuxName = "para-raid-watchdog-nopid";
-  const workdir = `${TMP}/wd-nopid`;
+  const workdir = `${TMP}/wd-exited`;
   mkdirSync(workdir, { recursive: true });
 
-  // tmux session exists (hasSession=true) but pane PID lookup returns null.
-  ctx.tmux.sessions.add(tmuxName);
-  ctx.tmux.listPanePid = async () => null;
-
-  insertLiveSession(ctx, sessionId, tmuxName, workdir);
+  ctx.runtime.spawn({ sessionId, cwd: workdir, mode: "new" });
+  ctx.runtime.emitExit(sessionId, 137); // OOM-killed
+  insertLiveSession(ctx, sessionId, workdir);
 
   await watchdogTick(ctx);
 
@@ -199,13 +140,28 @@ test("watchdog: marks live session as dead when listPanePid returns null", async
     .query<{ status: string }, [string]>("SELECT status FROM sessions WHERE id = ?")
     .get(sessionId);
   expect(row?.status).toBe("dead");
-
   const events = ctx.db.raw
-    .query<{ event_type: string; payload_json: string }, []>(
-      "SELECT event_type, payload_json FROM webhook_queue"
-    )
+    .query<{ payload_json: string }, []>("SELECT payload_json FROM webhook_queue")
     .all();
   expect(events).toHaveLength(1);
-  expect(events[0]!.event_type).toBe("session_dead");
   expect(JSON.parse(events[0]!.payload_json).reason).toBe("external_kill");
+});
+
+test("watchdog: leaves a healthy live session alone", async () => {
+  const ctx = makeCtx();
+  const sessionId = "00000000-0000-4000-8000-00000000bbbb";
+  const workdir = `${TMP}/wd-healthy`;
+  mkdirSync(workdir, { recursive: true });
+
+  ctx.runtime.spawn({ sessionId, cwd: workdir, mode: "new" });
+  insertLiveSession(ctx, sessionId, workdir);
+
+  await watchdogTick(ctx);
+
+  const row = ctx.db.raw
+    .query<{ status: string }, [string]>("SELECT status FROM sessions WHERE id = ?")
+    .get(sessionId);
+  expect(row?.status).toBe("live");
+  expect(ctx.db.raw.query<{ event_type: string }, []>("SELECT event_type FROM webhook_queue").all()).toHaveLength(0);
+  expect(existsSync(workdir)).toBe(true);
 });

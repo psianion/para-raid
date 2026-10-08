@@ -1,6 +1,6 @@
 import type { Db } from "../db";
 import type { EventBus } from "../events/bus";
-import type { TmuxAdapter } from "../tmux/adapter";
+import type { WorkerRuntime } from "../worker/runtime";
 import type { Logger } from "../logger";
 import type { ParaRaidConfig } from "../types";
 import type { ModeController } from "../limit/mode-controller";
@@ -18,12 +18,11 @@ export const ADMIN_ID = "__admin__";
 export interface HandlerCtx {
   db: Db;
   bus: EventBus;
-  tmux: TmuxAdapter;
+  runtime: WorkerRuntime;
   logger: Logger;
   config: ParaRaidConfig;
   modeController: ModeController;
   dispatcher: Dispatcher;
-  hookEventsPath: string;       // for recycler
   bundles?: Bundle[];           // MCP bundles loaded at boot; rendered per session
   requestId?: string;           // injected by request-id middleware
   adapter_id?: string;          // injected by auth middleware (the authenticated caller)

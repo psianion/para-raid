@@ -1,9 +1,7 @@
-import type { TmuxAdapter } from "../tmux/adapter";
 import type { DispatchJob } from "../types";
 
 export interface DispatcherOpts {
   maxConcurrentTurns: number;
-  tmux: TmuxAdapter;
   onDispatch: (job: DispatchJob) => Promise<string>;
 }
 

@@ -3,7 +3,9 @@ import { join } from "path";
 import type { Bundle } from "./loader";
 export { loadBundles } from "./loader";
 
-export function renderMcpJson(bundles: Bundle[], bundleName: string, cwd: string): void {
+/** Writes `<cwd>/.mcp.json` for the named bundle and returns its path (the
+ *  worker gets it via `--mcp-config`). Throws on an unknown bundle name. */
+export function renderMcpJson(bundles: Bundle[], bundleName: string, cwd: string): string {
   const bundle = bundles.find(b => b.name === bundleName);
   if (!bundle) throw new Error(`Unknown MCP bundle: "${bundleName}"`);
 
@@ -18,5 +20,7 @@ export function renderMcpJson(bundles: Bundle[], bundleName: string, cwd: string
     }
   }
 
-  writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers }, null, 2));
+  const path = join(cwd, ".mcp.json");
+  writeFileSync(path, JSON.stringify({ mcpServers }, null, 2));
+  return path;
 }
