@@ -1,6 +1,6 @@
 # para-raid
 
-Para-RAID is a single-user daemon that hosts your own long-running `claude` (Claude Code) sessions and relays messages to and from them for chat adapters (e.g. a Discord bot). You stay in the loop: an adapter forwards a message you sent, Para-RAID hands it to your session, and a webhook delivers the reply back. Sessions live inside detached tmux panes and transcripts persist to disk.
+Para-RAID is a single-user daemon that hosts your own long-running `claude` (Claude Code) sessions and relays messages to and from them for chat adapters (e.g. a Discord bot). You stay in the loop: an adapter forwards a message you sent, Para-RAID hands it to your session, and a webhook delivers the reply back. Each session is a headless `claude -p` worker process the daemon talks to over stdin/stdout (the `stream-json` protocol); claude persists every conversation to disk, so a session survives a daemon restart through `--resume`.
 
 See [LIMITATIONS.md](LIMITATIONS.md) for what does and doesn't ship today, [SECURITY.md](SECURITY.md) for the trust model, and [NOTICE.md](NOTICE.md) for terms.
 
@@ -21,8 +21,8 @@ loginctl enable-linger "$USER"   # optional: keep it running after you log out
 
 ## Configure
 
-- `~/.config/para-raid/config.toml` — copied from `config.example.toml` (written `chmod 600`). Paths support `~` and `$VAR`. `install.sh` sets `[auth] mode = "bearer"` and generates a `token` (the bundled CLI sends it automatically) and `[signing] mode = "hmac"` with a generated `secret` (webhooks carry an `X-Para-Raid-Signature` adapters can verify) — so keep this file private. nvm users: set `claude.env_setup = "source ~/.nvm/nvm.sh"` so the worker can find `claude`.
-- `~/.config/para-raid/mcp-bundles.toml` — optional MCP backends (e.g. scrypt); copied from `mcp-bundles.example.toml`. A session names a bundle in `open_session`; the daemon writes a matching `.mcp.json` into the worker's workdir.
+- `~/.config/para-raid/config.toml` — copied from `config.example.toml` (written `chmod 600`). Paths support `~` and `$VAR`. `install.sh` sets `[auth] mode = "bearer"` and generates a `token` (the bundled CLI sends it automatically) and `[signing] mode = "hmac"` with a generated `secret` (webhooks carry an `X-Para-Raid-Signature` adapters can verify) — so keep this file private. nvm users: set `claude.env_setup = "source ~/.nvm/nvm.sh"` so the worker can find `claude`. `claude.model` and `claude.extra_args` are passed to every worker; `claude.min_version` is pinned by setup and checked by `doctor` (`claude update` is the only "update script" claude needs).
+- `~/.config/para-raid/mcp-bundles.toml` — optional MCP backends (e.g. scrypt); copied from `mcp-bundles.example.toml`. A session names a bundle in `open_session`; the daemon writes a matching `.mcp.json` into the worker's workdir and passes it to claude with `--mcp-config`.
 
 ## Advanced — drive a session by hand
 
@@ -43,14 +43,14 @@ para-raid stats
 para-raid dead-letters list
 ```
 
-The daemon **auto-pauses** when claude warns it's near a usage limit or when memory runs high (`observability.*`); `para-raid status` shows `mode=paused` and `para-raid resume` clears it.
+The daemon **auto-pauses** when claude reports its quota as anything but allowed (it emits a `rate_limit_event` after every turn), when a reply trips `limit.warning_regex`, or when memory runs high (`observability.*`); `para-raid status` shows `mode=paused` and `para-raid resume` clears it.
 
 ## Tests
 
 ```bash
 bun test                  # unit + integration suite
 bunx tsc --noEmit         # typecheck
-bun run smoke:integration # FakeTmux flows
+bun run smoke:integration # fake-worker flows over the real socket API
 bun run smoke:e2e         # real claude, drives the systemd daemon (~3 min)
 bun run smoke:burn-in     # real claude, leaves a session live for hours
 ```

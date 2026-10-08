@@ -4,7 +4,7 @@ import { startGraceTimer } from "./grace";
 import type { BootCtx } from "./boot";
 import { createDb } from "../db";
 import { createEventBus } from "../events/bus";
-import { createFakeTmux } from "../tmux/fake";
+import { createFakeRuntime } from "../worker/fake";
 import type { ParaRaidConfig } from "../types";
 
 const NOOP_LOGGER = { info: () => {}, warn: () => {}, error: () => {} } as any;
@@ -22,7 +22,7 @@ afterEach(() => {
 function makeCtx(): BootCtx {
   const db = createDb(":memory:");
   const bus = createEventBus();
-  const tmux = createFakeTmux();
+  const runtime = createFakeRuntime(bus);
   const config = {
     daemon: { data_dir: TMP, socket_path: "/tmp/x.sock" },
     concurrency: { max_concurrent_turns: 3, max_total_sessions: 10 },
@@ -33,7 +33,7 @@ function makeCtx(): BootCtx {
     signing: "none",
     adapters: { test: { webhook_url: "http://x/hook" } },
   } as unknown as ParaRaidConfig;
-  return { db, bus, tmux, config, logger: NOOP_LOGGER };
+  return { db, bus, runtime, config, logger: NOOP_LOGGER };
 }
 
 function insertRecoveringSession(
@@ -45,14 +45,13 @@ function insertRecoveringSession(
   const now = Date.now();
   ctx.db.raw.run(
     `INSERT INTO sessions
-     (id, adapter_id, adapter_ref, status, tmux_session, cwd, mcp_bundle, webhook_url, created_at, updated_at, recovery_expires_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+     (id, adapter_id, adapter_ref, status, cwd, mcp_bundle, webhook_url, created_at, updated_at, recovery_expires_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
     [
       id,
       "test",
       `ref-${id}`,
       "recovering",
-      `tmx-${id}`,
       cwd,
       "",
       "http://x/hook",

@@ -13,6 +13,8 @@ export const statusHandler: Handler = async (_req, ctx) => {
   for (const r of rows) {
     if (r.status in counts) counts[r.status] = r.n;
   }
+  // The CLI's status line prints `total=`; without this key it showed "?".
+  counts.total = rows.reduce((sum, r) => sum + r.n, 0);
 
   const ramMb = Math.round((process.memoryUsage().rss / (1024 * 1024)) * 100) / 100;
 

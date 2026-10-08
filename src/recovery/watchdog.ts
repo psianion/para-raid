@@ -1,12 +1,12 @@
 import { rmSync } from "fs";
 import type { Db } from "../db";
-import type { TmuxAdapter } from "../tmux/adapter";
+import type { WorkerRuntime } from "../worker/runtime";
 import type { Logger } from "../logger";
 import { enqueueWebhook } from "../publisher/enqueue";
 
 export interface WatchdogCtx {
   db: Db;
-  tmux: TmuxAdapter;
+  runtime: WorkerRuntime;
   logger: Logger;
 }
 
@@ -21,22 +21,20 @@ interface LiveSessionRow {
   id: string;
   adapter_id: string;
   webhook_url: string;
-  tmux_session: string;
   cwd: string;
 }
 
 /**
  * Tier-0 health probe over all `live` sessions.
  *
- * Detects external tmux kill (e.g. `tmux kill-session`, OOM-killer, host crash).
- * For each session whose tmux pane is gone OR whose pane PID cannot be read,
- * flips the row to `dead`, removes the workdir, and enqueues a `session_dead`
- * webhook with reason `external_kill`.
+ * Detects a worker that died outside the daemon's control (OOM-killer, crash,
+ * a stray kill). For each session with no live worker process, flips the row
+ * to `dead`, removes the workdir, and enqueues a `session_dead` webhook with
+ * reason `external_kill`.
  *
  * Tier-1 (hung-but-alive): for sessions that pass tier-0, a turn stuck in
  * `dispatching` past STALE_TURN_THRESHOLD_MS is reaped via the same path with
- * reason `stuck_turn` so adapters can tell it apart from `external_kill`. No
- * transcript scan — the stale timestamp IS the lack-of-progress signal.
+ * reason `stuck_turn` so adapters can tell it apart from `external_kill`.
  */
 function reap(
   ctx: WatchdogCtx,
@@ -47,6 +45,9 @@ function reap(
     "UPDATE sessions SET status = 'dead', updated_at = ? WHERE id = ?",
     [Date.now(), sess.id]
   );
+  // A hung worker is still a process: don't leave it running after we've
+  // declared the session dead.
+  ctx.runtime.get(sess.id)?.kill("SIGTERM");
   try {
     rmSync(sess.cwd, { recursive: true, force: true });
   } catch {
@@ -61,7 +62,6 @@ function reap(
   });
   ctx.logger.warn("watchdog.dead", {
     session_id: sess.id,
-    tmux: sess.tmux_session,
     reason,
   });
 }
@@ -69,14 +69,13 @@ function reap(
 export async function watchdogTick(ctx: WatchdogCtx): Promise<void> {
   const live = ctx.db.raw
     .query<LiveSessionRow, []>(
-      "SELECT id, adapter_id, webhook_url, tmux_session, cwd FROM sessions WHERE status = 'live'"
+      "SELECT id, adapter_id, webhook_url, cwd FROM sessions WHERE status = 'live'"
     )
     .all();
 
   for (const sess of live) {
-    const tmuxAlive = await ctx.tmux.hasSession(sess.tmux_session);
-    const pid = tmuxAlive ? await ctx.tmux.listPanePid(sess.tmux_session) : null;
-    if (!tmuxAlive || pid === null) {
+    const handle = ctx.runtime.get(sess.id);
+    if (!handle || !handle.alive) {
       reap(ctx, sess, "external_kill"); // tier-0 fail
       continue;
     }

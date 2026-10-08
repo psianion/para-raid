@@ -36,6 +36,32 @@ export function isUnderTmp(p: string): boolean {
   return p === "/tmp" || p.startsWith("/tmp/");
 }
 
+/** Numeric semver compare on the `major.minor.patch` prefix: negative when a < b. */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/** The version gate: at least `min_version`, and — when the legacy exact
+ *  allowlist is still present in a config — also a member of it. */
+export function checkClaudeVersion(
+  installed: string,
+  cfg: { min_version: string; allowed_versions?: string[] },
+): { pass: boolean; msg: string } {
+  if (compareVersions(installed, cfg.min_version) < 0) {
+    return { pass: false, msg: `claude=${installed} is older than min_version ${cfg.min_version} — run \`claude update\`` };
+  }
+  if (cfg.allowed_versions && !cfg.allowed_versions.includes(installed)) {
+    return { pass: false, msg: `claude=${installed} NOT in allowed_versions ${JSON.stringify(cfg.allowed_versions)} — update the list or drop it to rely on min_version` };
+  }
+  return { pass: true, msg: `claude=${installed} (min ${cfg.min_version})` };
+}
+
 /** Interpret `claude auth status --json` so the daemon doesn't launch sessions
  *  that die at the login prompt. */
 export function parseClaudeAuthStatus(stdout: string, exitOk: boolean): { pass: boolean; msg: string } {
@@ -100,6 +126,14 @@ export async function checkClaudeLogin(): Promise<{ pass: boolean; msg: string }
   return parseClaudeAuthStatus(r.stdout, r.ok);
 }
 
+/** Installed claude version string, or null when it cannot be determined. */
+export async function installedClaudeVersion(): Promise<string | null> {
+  if (!(await which("claude"))) return null;
+  const r = await exec(["claude", "--version"]);
+  if (!r.ok) return null;
+  return r.stdout.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
+}
+
 export function buildDoctorChecks(configPath: string): DoctorCheck[] {
   return [
     { name: "bun >= 1.3", run: async () => {
@@ -107,21 +141,21 @@ export function buildDoctorChecks(configPath: string): DoctorCheck[] {
         const [maj, min] = v.split(".").map(Number);
         return { pass: maj > 1 || (maj === 1 && min >= 3), msg: `bun=${v}` };
     }},
-    { name: "tmux available", run: async () => {
-        const p = await which("tmux");
+    { name: "claude available", run: async () => {
+        const p = await which("claude");
         return { pass: !!p, msg: p ?? "not found in PATH" };
     }},
-    { name: "jq available", run: async () => {
-        const p = await which("jq");
-        return { pass: !!p, msg: p ?? "not found in PATH" };
-    }},
-    { name: "python3 available", run: async () => {
-        const p = await which("python3");
-        return { pass: !!p, msg: p ?? "not found in PATH" };
+    { name: "claude headless stream-json", run: async () => {
+        // Workers need `claude -p --input-format stream-json`; a build that
+        // lacks the flag would reject every launch.
+        if (!(await which("claude"))) return { pass: false, msg: "skipped: claude not in PATH" };
+        const r = await exec(["claude", "--help"]);
+        const ok = r.ok && r.stdout.includes("--input-format");
+        return { pass: ok, msg: ok ? "supported" : "claude --help does not list --input-format — update claude" };
     }},
     { name: "ANTHROPIC_API_KEY unset", run: async () => {
         const set = !!process.env.ANTHROPIC_API_KEY;
-        return { pass: !set, msg: set ? "SET (claude --resume will use API not subscription)" : "unset" };
+        return { pass: !set, msg: set ? "SET (workers would bill the API, not your subscription)" : "unset" };
     }},
     { name: "config file exists", run: async () => {
         const exists = existsSync(configPath);
@@ -132,17 +166,12 @@ export function buildDoctorChecks(configPath: string): DoctorCheck[] {
         try { loadConfig(configPath); return { pass: true, msg: "ok" }; }
         catch (e) { return { pass: false, msg: String(e) }; }
     }},
-    { name: "claude version in allowlist", run: async () => {
+    { name: "claude version >= min", run: async () => {
         if (!existsSync(configPath)) return { pass: false, msg: "skipped: no config" };
         const cfg = loadConfig(configPath);
-        const claudePath = await which("claude");
-        if (!claudePath) return { pass: false, msg: "claude not in PATH" };
-        const r = await exec(["claude", "--version"]);
-        if (!r.ok) return { pass: false, msg: "claude --version failed" };
-        const m = r.stdout.match(/[\d.]+/);
-        const v = m ? m[0] : r.stdout;
-        const ok = cfg.claude.allowed_versions.includes(v);
-        return { pass: ok, msg: ok ? `claude=${v}` : `claude=${v} NOT in ${JSON.stringify(cfg.claude.allowed_versions)}` };
+        const v = await installedClaudeVersion();
+        if (!v) return { pass: false, msg: "could not read claude --version" };
+        return checkClaudeVersion(v, cfg.claude);
     }},
     { name: "claude logged in", run: checkClaudeLogin },
     { name: "auth configured securely", run: async () => {

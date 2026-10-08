@@ -1,6 +1,6 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { createHmac } from "node:crypto";
-import { createHarness, waitFor, TEST_ADAPTER_TOKEN, type Harness } from "./harness";
+import { createHarness, waitFor, waitForSent, waitForSpawn, TEST_ADAPTER_TOKEN, type Harness } from "./harness";
 import { createReferenceReceiver, type ReferenceReceiver } from "../../examples/reference-adapter/receiver";
 import { createReferenceClient } from "../../examples/reference-adapter/client";
 
@@ -33,11 +33,10 @@ describe("reference adapter end-to-end", () => {
     // loop over HTTP to our receiver (signature-verified before it's recorded).
     await waitFor(() => receiver.events.some((e) => e.event_type === "session_open_acknowledged" && e.session_id === sid), 3_000);
 
-    // Drive launch + first turn exactly as the worker's hooks would.
-    await waitFor(() => h.fakeTmux.calls.some((c) => c.method === "newSession"));
-    h.emitHookEvent({ hook_event_name: "SessionStart" as any, session_id: sid });
-    await waitFor(() => h.fakeTmux.calls.some((c) => c.method === "sendKeysLiteral" && (c.args as any[])[0]?.toString().startsWith("para-raid-")));
-    h.emitHookEvent({ hook_event_name: "Stop" as any, session_id: sid, last_assistant_message: "hi" });
+    // Drive launch + first turn exactly as the worker process would.
+    await waitForSpawn(h, sid);
+    await waitForSent(h, sid, 1);
+    h.runtime.emitResult(sid, "hi");
 
     const live = await waitFor(() => receiver.events.find((e) => e.event_type === "session_live" && e.session_id === sid), 3_000);
     const replied = await waitFor(() => receiver.events.find((e) => e.event_type === "turn_replied" && e.session_id === sid), 3_000);

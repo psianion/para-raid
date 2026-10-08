@@ -2,31 +2,36 @@ import { test, expect } from "bun:test";
 import { renderConfig, renderSystemdUnit } from "./setup";
 
 const EXAMPLE = `[claude]
-allowed_versions = ["1.0.0", "2.0.0"]
+min_version = "2.1.259"
 
 [auth]
-mode = "none"   # "none" | "bearer" | "mtls". install.sh flips this to "bearer".
-token = ""      # bearer secret; install.sh generates one.
+mode = "none"   # "none" | "bearer" | "mtls". setup flips this to "bearer".
+token = ""      # bearer secret; setup generates one.
 
 [signing]
-mode = "none"   # "none" | "hmac". install.sh flips this to "hmac".
-secret = ""     # hmac secret; install.sh generates one.
+mode = "none"   # "none" | "hmac". setup flips this to "hmac".
+secret = ""     # hmac secret; setup generates one.
 
 [adapters.uxie]
 webhook_url = "http://localhost/api/webhooks/para-raid"
 `;
 
-test("renderConfig pins the version and enables bearer + hmac with the given secrets", () => {
-  const out = renderConfig(EXAMPLE, { version: "2.1.119", token: "TKN", secret: "SEC" });
-  expect(out).toContain(`allowed_versions = ["2.1.119"]`);
+test("renderConfig pins min_version to the installed claude and enables bearer + hmac with the given secrets", () => {
+  const out = renderConfig(EXAMPLE, { version: "2.1.294", token: "TKN", secret: "SEC" });
+  expect(out).toContain(`min_version = "2.1.294"`);
   expect(out).toMatch(/\[auth\][\s\S]*mode = "bearer"/);
   expect(out).toContain(`token = "TKN"`);
   expect(out).toMatch(/\[signing\][\s\S]*mode = "hmac"/);
   expect(out).toContain(`secret = "SEC"`);
 });
 
+test("renderConfig leaves min_version alone when the installed version is unknown", () => {
+  const out = renderConfig(EXAMPLE, { version: "", token: "T", secret: "S" });
+  expect(out).toContain(`min_version = "2.1.259"`);
+});
+
 test("renderConfig preserves comments and leaves [adapters] untouched", () => {
-  const out = renderConfig(EXAMPLE, { version: "9", token: "T", secret: "S" });
+  const out = renderConfig(EXAMPLE, { version: "9.0.0", token: "T", secret: "S" });
   expect(out).toContain(`# "none" | "bearer" | "mtls"`);            // comment kept
   expect(out).toContain(`webhook_url = "http://localhost/api/webhooks/para-raid"`);
   const adapters = out.slice(out.indexOf("[adapters.uxie]"));
@@ -41,9 +46,10 @@ test("renderSystemdUnit emits the key hardening lines", () => {
   expect(u).toContain("ExecStart=/b/bun run /r/src/daemon.ts");
   expect(u).toContain("MemoryMax=95%");
   expect(u).toContain("WantedBy=default.target");
-  // tmux server + claude workers must OUTLIVE daemon restarts (A6 recovery);
-  // the default control-group kill would take them all down.
-  expect(u).toContain("KillMode=process");
+  // Workers are daemon children: the default control-group kill is what we
+  // want (conversations come back via --resume), with room to close cleanly.
+  expect(u).not.toContain("KillMode=process");
+  expect(u).toContain("TimeoutStopSec=20");
   // claude's native installer target must be on the unit's PATH.
   expect(u).toContain("/home/me/.local/bin");
 });

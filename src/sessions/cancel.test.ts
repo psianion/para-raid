@@ -1,53 +1,43 @@
 import { test, expect } from "bun:test";
 import { cancelTurn } from "./cancel";
-import { createFakeTmux } from "../tmux/fake";
+import { createFakeRuntime } from "../worker/fake";
 import { createEventBus } from "../events/bus";
 
-test("cancel returns cancelled=true when Stop arrives after Escape", async () => {
-  const tmux = createFakeTmux();
-  tmux.sessions.add("pr-c1");
+const SID = "00000000-0000-4000-8000-00000000dddd";
+
+test("cancel sends an interrupt and reports cancelled once the aborted result lands", async () => {
   const bus = createEventBus();
+  const runtime = createFakeRuntime(bus);
+  runtime.spawn({ sessionId: SID, cwd: "/tmp", mode: "new" });
+  runtime.emitAssistant(SID, "half an answer");
 
-  const p = cancelTurn({
-    tmux, bus,
-    sessionId: "00000000-0000-4000-8000-00000000dddd",
-    tmuxName: "pr-c1",
-    transcriptPath: "/tmp/pararaid-w34-cancel/missing.jsonl",
-    escapeWaitMs: 200,
-    ctrlcWaitMs: 200,
-  });
-
-  setTimeout(() => bus.emit({
-    hook_event_name: "Stop",
-    session_id: "00000000-0000-4000-8000-00000000dddd",
-    cwd: "/tmp",
-  }), 50);
+  const p = cancelTurn({ runtime, bus, sessionId: SID, waitMs: 200, signalWaitMs: 200 });
+  setTimeout(() => runtime.emitResult(SID, "", { subtype: "error_during_execution", is_error: true, terminal_reason: "aborted_streaming" }), 30);
 
   const r = await p;
   expect(r.cancelled).toBe(true);
-  expect(r.escalatedToCtrlC).toBe(false);
-
-  const sentEsc = tmux.calls.some(c => c.method === "sendEscape");
-  const sentCtrlC = tmux.calls.some(c => c.method === "sendCtrlC");
-  expect(sentEsc).toBe(true);
-  expect(sentCtrlC).toBe(false);
+  expect(r.escalatedToSignal).toBe(false);
+  expect(r.partialText).toBe("half an answer");
+  const w = runtime.workers.get(SID)!;
+  expect(w.interrupts).toBe(1);
+  expect(w.killed).toEqual([]);
 });
 
-test("cancel escalates to Ctrl-C when Stop never arrives after Escape", async () => {
-  const tmux = createFakeTmux();
-  tmux.sessions.add("pr-c2");
+test("cancel escalates to SIGINT when no result follows the interrupt", async () => {
   const bus = createEventBus();
+  const runtime = createFakeRuntime(bus);
+  runtime.spawn({ sessionId: SID, cwd: "/tmp", mode: "new" });
 
-  const p = cancelTurn({
-    tmux, bus,
-    sessionId: "00000000-0000-4000-8000-00000000eeee",
-    tmuxName: "pr-c2",
-    transcriptPath: "/tmp/pararaid-w34-cancel/missing.jsonl",
-    escapeWaitMs: 100,
-    ctrlcWaitMs: 100,
-  });
-
-  const r = await p;
+  const r = await cancelTurn({ runtime, bus, sessionId: SID, waitMs: 50, signalWaitMs: 50 });
   expect(r.cancelled).toBe(false);
-  expect(r.escalatedToCtrlC).toBe(true);
+  expect(r.escalatedToSignal).toBe(true);
+  expect(r.partialText).toBeNull();
+  expect(runtime.workers.get(SID)!.killed).toEqual(["SIGINT"]);
+});
+
+test("cancel on a session without a worker is a no-op", async () => {
+  const bus = createEventBus();
+  const runtime = createFakeRuntime(bus);
+  const r = await cancelTurn({ runtime, bus, sessionId: SID, waitMs: 10 });
+  expect(r).toEqual({ cancelled: false, escalatedToSignal: false, partialText: null });
 });

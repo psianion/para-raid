@@ -1,34 +1,30 @@
-// src/events/bus.ts — DRIFT FROM MASTER PLAN: add session_end named channel
-import type { HookEvent } from "../types";
+// src/events/bus.ts — in-process fan-out of WorkerEvents.
+import type { WorkerEvent } from "../worker/runtime";
 
-type AnyHandler = (event: HookEvent) => void;
-type SessionEndHandler = (event: HookEvent) => void;
+type Handler = (event: WorkerEvent) => void;
 
 export function createEventBus() {
-  const anyHandlers: AnyHandler[] = [];
-  const sessionEndHandlers: SessionEndHandler[] = [];
+  const handlers: Handler[] = [];
+  function subscribe(handler: Handler): () => void {
+    handlers.push(handler);
+    return () => {
+      const i = handlers.indexOf(handler);
+      if (i !== -1) handlers.splice(i, 1);
+    };
+  }
   return {
-    subscribe(handler: AnyHandler): () => void {
-      anyHandlers.push(handler);
-      return () => {
-        const i = anyHandlers.indexOf(handler);
-        if (i !== -1) anyHandlers.splice(i, 1);
-      };
+    subscribe,
+    /** Subscribe to one session's exit only. */
+    onExit(sessionId: string, handler: (event: Extract<WorkerEvent, { type: "exit" }>) => void): () => void {
+      return subscribe((ev) => {
+        if (ev.type === "exit" && ev.session_id === sessionId) handler(ev);
+      });
     },
-    onSessionEnd(handler: SessionEndHandler): () => void {
-      sessionEndHandlers.push(handler);
-      return () => {
-        const i = sessionEndHandlers.indexOf(handler);
-        if (i !== -1) sessionEndHandlers.splice(i, 1);
-      };
+    emit(event: WorkerEvent) {
+      // Snapshot: a handler may unsubscribe itself (or others) while we iterate.
+      for (const h of [...handlers]) h(event);
     },
-    emit(event: HookEvent) {
-      for (const h of anyHandlers) h(event);
-      if (event.hook_event_name === "SessionEnd") {
-        for (const h of sessionEndHandlers) h(event);
-      }
-    },
-    handlerCount(): number { return anyHandlers.length; },
+    handlerCount(): number { return handlers.length; },
   };
 }
 export type EventBus = ReturnType<typeof createEventBus>;

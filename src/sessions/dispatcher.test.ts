@@ -1,20 +1,17 @@
 import { test, expect } from "bun:test";
 import { createDispatcher } from "./dispatcher";
-import { createFakeTmux } from "../tmux/fake";
 import type { DispatchJob } from "../types";
 
 const job = (sid: string, tid: string): DispatchJob => ({
-  session_id: sid, turn_id: tid, prompt: "p", tmux_session: sid,
+  session_id: sid, turn_id: tid, prompt: "p",
 });
 
 test("dispatcher respects max_concurrent_turns", async () => {
-  const tmux = createFakeTmux();
   let active = 0;
   let max = 0;
 
   const d = createDispatcher({
     maxConcurrentTurns: 2,
-    tmux,
     onDispatch: async () => {
       active++; max = Math.max(max, active);
       await new Promise(r => setTimeout(r, 50));
@@ -35,12 +32,10 @@ test("dispatcher respects max_concurrent_turns", async () => {
 });
 
 test("dispatcher serializes turns within a session (FIFO per session)", async () => {
-  const tmux = createFakeTmux();
   const order: string[] = [];
 
   const d = createDispatcher({
     maxConcurrentTurns: 4,
-    tmux,
     onDispatch: async (j) => {
       order.push(`start:${j.turn_id}`);
       await new Promise(r => setTimeout(r, 30));
@@ -64,9 +59,8 @@ test("dispatcher serializes turns within a session (FIFO per session)", async ()
 });
 
 test("dispatcher returns the onDispatch result", async () => {
-  const tmux = createFakeTmux();
   const d = createDispatcher({
-    maxConcurrentTurns: 1, tmux,
+    maxConcurrentTurns: 1,
     onDispatch: async (j) => `reply-for-${j.turn_id}`,
   });
   const r = await d.enqueue(job("s1", "t-x"));

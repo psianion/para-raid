@@ -7,7 +7,6 @@ export interface Session {
   id: string;
   adapter_id: string;
   adapter_ref: string;
-  tmux_session: string;
   cwd: string;
   mcp_bundle: string;
   webhook_url: string;
@@ -82,47 +81,27 @@ export interface IdempotencyKey {
   expires_at: number;
 }
 
-// --- Tailer ---
-export interface TailerState {
-  id: string;
-  file_path: string;
-  file_inode: number;
-  offset: number;
-  updated_at: number;
-}
-
-// --- Transcript ---
-export interface TranscriptOffset {
-  session_id: string;
-  transcript_path: string;
-  last_scanned_offset: number;
-  updated_at: number;
-}
-
-// --- Hook Events ---
-export interface HookEvent {
-  hook_event_name: "SessionStart" | "Stop" | "PreToolUse" | "SessionEnd";
-  session_id: string;
-  cwd: string;
-  transcript_path?: string;
-  last_assistant_message?: string;
-  permission_mode?: string;
-  stop_hook_active?: boolean;
-  tool_name?: string;
-  tool_input?: Record<string, unknown>;
-}
-
 // --- Mode ---
 export type DaemonMode = "running" | "paused";
 
 // --- Config ---
 export interface ParaRaidConfig {
   daemon: { socket_path: string; data_dir: string };
-  claude: { allowed_versions: string[]; env_setup: string };
+  claude: {
+    /** Minimum claude version (semver). Checked by `doctor`. */
+    min_version: string;
+    /** Legacy exact-version allowlist; when set, the installed version must be in it. */
+    allowed_versions?: string[];
+    env_setup: string;
+    /** Model alias/name passed to every worker (`--model`); empty = claude's default. */
+    model: string;
+    /** Extra CLI args appended to every worker launch. */
+    extra_args: string[];
+  };
   concurrency: { max_concurrent_turns: number; max_total_sessions: number; turn_timeout_ms: number };
   recovery: { grace_window_ms: number };
   publisher: { retry_window_ms: number; backoff_ms: number[] };
-  limit: { warning_regex: string };
+  limit: { warning_regex: string; pause_on_rate_limit: boolean };
   observability: { ram_warn_pct: number; ram_refuse_pct: number; stats_interval_ms: number };
   auth: { mode: "none" | "bearer" | "mtls"; token?: string };
   signing: { mode: "none" | "hmac"; secret?: string };
@@ -169,5 +148,4 @@ export interface DispatchJob {
   session_id: string;
   turn_id: string;
   prompt: string;
-  tmux_session: string;
 }

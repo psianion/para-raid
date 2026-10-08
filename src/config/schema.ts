@@ -6,9 +6,14 @@ export const ConfigSchema = z.object({
     data_dir: z.string(),
   }),
   claude: z.object({
-    allowed_versions: z.array(z.string()).min(1),
+    // Workers drive `claude -p --input-format stream-json`; 2.1.259 added
+    // `--permission-prompts`, which marks the headless surface this build targets.
+    min_version: z.string().regex(/^\d+\.\d+\.\d+$/).default("2.1.259"),
+    allowed_versions: z.array(z.string()).optional(),
     env_setup: z.string().default(""),
-  }),
+    model: z.string().default(""),
+    extra_args: z.array(z.string()).default([]),
+  }).default({}),
   concurrency: z.object({
     max_concurrent_turns: z.number().int().min(1).max(20),
     max_total_sessions: z.number().int().min(1).max(200),
@@ -23,6 +28,9 @@ export const ConfigSchema = z.object({
   }),
   limit: z.object({
     warning_regex: z.string(),
+    // claude reports its own quota state on every turn (`rate_limit_event`);
+    // a non-allowed status pauses the daemon just like a matched warning.
+    pause_on_rate_limit: z.boolean().default(true),
   }),
   observability: z.object({
     ram_warn_pct: z.number().min(0).max(100),

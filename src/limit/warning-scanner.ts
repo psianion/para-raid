@@ -1,4 +1,4 @@
-import type { HookEvent } from "../types";
+import type { WorkerEvent } from "../worker/runtime";
 
 export function scanForWarning(text: string, warningRegex: RegExp): boolean {
   return warningRegex.test(text);
@@ -28,6 +28,9 @@ export function compileWarningRegex(pattern: string): RegExp | null {
   return new RegExp(src, flags);
 }
 
+type Mode = { isPaused(): boolean; pause(): void };
+type WarnLogger = { warn(event: string, meta?: unknown): void };
+
 /** Quota self-pause: if a completed turn's text trips the limit regex, pause the
  *  daemon so it stops burning quota. Returns true iff it paused this call. No-op
  *  when there's no regex, no match, or the daemon is already paused (incl. a
@@ -35,8 +38,8 @@ export function compileWarningRegex(pattern: string): RegExp | null {
 export function pauseIfLimitReached(
   text: string,
   regex: RegExp | null,
-  mode: { isPaused(): boolean; pause(): void },
-  logger: { warn(event: string, meta?: unknown): void },
+  mode: Mode,
+  logger: WarnLogger,
 ): boolean {
   if (!regex) return false;
   const scanned = text.length > SCAN_TAIL ? text.slice(-SCAN_TAIL) : text;
@@ -47,19 +50,51 @@ export function pauseIfLimitReached(
   return true;
 }
 
-/** Wire the scanner into the hook-event bus: any Stop whose reply trips the
- *  regex pauses the daemon. Covers what the dispatcher's onDispatch scan
- *  misses — a Stop landing after a turn timeout, or a session driven outside
- *  the dispatcher (Wave 9 carry-over). */
-export function watchStopEventsForWarning(
-  bus: { subscribe(fn: (event: HookEvent) => void): unknown },
+/** Wire the scanner into the worker-event bus: any result whose reply trips
+ *  the regex pauses the daemon. Covers what the dispatcher's onDispatch scan
+ *  misses — a result landing after a turn timeout, or a session driven
+ *  outside the dispatcher. */
+export function watchResultEventsForWarning(
+  bus: { subscribe(fn: (event: WorkerEvent) => void): unknown },
   regex: RegExp | null,
-  mode: { isPaused(): boolean; pause(): void },
-  logger: { warn(event: string, meta?: unknown): void },
+  mode: Mode,
+  logger: WarnLogger,
 ): void {
   if (!regex) return;
   bus.subscribe((event) => {
-    if (event.hook_event_name !== "Stop") return;
-    pauseIfLimitReached(event.last_assistant_message ?? "", regex, mode, logger);
+    if (event.type !== "result") return;
+    pauseIfLimitReached(event.result, regex, mode, logger);
+  });
+}
+
+/** claude reports its own quota state after each turn (`rate_limit_event`).
+ *  Anything other than `allowed` means the next turn would be refused, so pause
+ *  now instead of discovering it as a failed turn. Returns true iff paused. */
+export function pauseIfRateLimited(
+  event: Extract<WorkerEvent, { type: "rate_limit" }>,
+  mode: Mode,
+  logger: WarnLogger,
+): boolean {
+  if (event.status === "allowed" || event.status === "unknown") return false;
+  if (mode.isPaused()) return false;
+  mode.pause();
+  logger.warn("limit.auto_pause", {
+    reason: "rate_limit_event",
+    status: event.status,
+    rate_limit_type: event.rate_limit_type,
+    resets_at: event.resets_at,
+    utilization: event.utilization,
+  });
+  return true;
+}
+
+export function watchRateLimitEvents(
+  bus: { subscribe(fn: (event: WorkerEvent) => void): unknown },
+  mode: Mode,
+  logger: WarnLogger,
+): void {
+  bus.subscribe((event) => {
+    if (event.type !== "rate_limit") return;
+    pauseIfRateLimited(event, mode, logger);
   });
 }

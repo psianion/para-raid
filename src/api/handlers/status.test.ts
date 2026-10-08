@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from "fs";
 import { statusHandler } from "./status";
 import { createDb } from "../../db";
 import { createEventBus } from "../../events/bus";
-import { createFakeTmux } from "../../tmux/fake";
+import { createFakeRuntime } from "../../worker/fake";
 import { createModeController } from "../../limit/mode-controller";
 import { createDispatcher } from "../../sessions/dispatcher";
 import type { HandlerCtx } from "../router";
@@ -18,16 +18,16 @@ afterEach(() => { rmSync(TMP, { recursive: true, force: true }); });
 function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
   const db = createDb(":memory:");
   const bus = createEventBus();
-  const tmux = createFakeTmux();
+  const runtime = createFakeRuntime(bus);
   const modeController = createModeController();
-  const dispatcher = createDispatcher({ maxConcurrentTurns: 3, tmux, onDispatch: async () => "stub" });
+  const dispatcher = createDispatcher({ maxConcurrentTurns: 3, onDispatch: async () => "stub" });
   const config = {
     daemon: { socket_path: "/tmp/x.sock", data_dir: TMP },
     adapters: { test: { webhook_url: "http://x/hook", token: "t1" } },
   } as unknown as ParaRaidConfig;
   return {
-    db, bus, tmux, modeController, dispatcher, config,
-    logger: NOOP_LOGGER, hookEventsPath: `${TMP}/hook-events.jsonl`,
+    db, bus, runtime, modeController, dispatcher, config,
+    logger: NOOP_LOGGER,
     adapter_id: "__admin__",
     ...overrides,
   };
@@ -36,9 +36,9 @@ function makeCtx(overrides: Partial<HandlerCtx> = {}): HandlerCtx {
 function insertSess(ctx: HandlerCtx, id: string, status: string): void {
   const now = Date.now();
   ctx.db.raw.run(
-    `INSERT INTO sessions (id, adapter_id, adapter_ref, status, tmux_session, cwd, mcp_bundle, webhook_url, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [id, "test", `ref-${id}`, status, `tmx-${id}`, `/tmp/cwd-${id}`, "", "http://x/hook", now, now],
+    `INSERT INTO sessions (id, adapter_id, adapter_ref, status, cwd, mcp_bundle, webhook_url, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [id, "test", `ref-${id}`, status, `/tmp/cwd-${id}`, "", "http://x/hook", now, now],
   );
 }
 
@@ -57,7 +57,7 @@ test("status returns mode, dispatcher counts, session breakdown, and ram_mb", as
   expect(body.mode).toBe("running");
   expect(body.active_turns).toBe(0);
   expect(body.pending_turns).toBe(0);
-  expect(body.sessions).toEqual({ live: 2, launching: 1, recovering: 0, closed: 0, dead: 1 });
+  expect(body.sessions).toEqual({ live: 2, launching: 1, recovering: 0, closed: 0, dead: 1, total: 4 });
   expect(typeof body.ram_mb).toBe("number");
   expect(body.ram_mb).toBeGreaterThan(0);
 });

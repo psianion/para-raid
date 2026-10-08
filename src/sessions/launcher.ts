@@ -1,71 +1,62 @@
-import type { TmuxAdapter } from "../tmux/adapter";
+// src/sessions/launcher.ts — spawn a worker and make sure it came up.
 import type { EventBus } from "../events/bus";
-import { claudeLaunchCommand } from "../workdir";
+import type { WorkerHandle, WorkerRuntime } from "../worker/runtime";
 
 export interface LaunchOpts {
-  tmux: TmuxAdapter;
+  runtime: WorkerRuntime;
   bus: EventBus;
-  sessionId: string;          // must be a valid UUID — passed to claude --session-id
-  tmuxName: string;
+  sessionId: string;          // must be a valid UUID — becomes claude's session id
   cwd: string;
-  timeoutMs?: number;
+  /** Continue an existing conversation (`claude --resume`) instead of starting one. */
+  resume?: boolean;
+  mcpConfigPath?: string;
+  /** How long to watch for an early exit before declaring the worker up. */
+  readyGraceMs?: number;
 }
 
-export function launchSession(opts: LaunchOpts): Promise<void> {
-  // 120s: claude's cold boot on modest hardware (WSL2, first model-version
-  // check) measured ~46s — 30s was tuned on the VPS and killed healthy
-  // launches. A genuinely dead pane just fails slower; the watchdog covers it.
-  const { tmux, bus, sessionId, tmuxName, cwd, timeoutMs = 120_000 } = opts;
+/**
+ * Starts the worker and resolves once it has stayed alive for `readyGraceMs`.
+ *
+ * There is no readiness event to wait for: in stream-json mode claude emits
+ * its `init` at the start of every turn, i.e. only after the first user
+ * message arrives, so a launcher that waited for it would wait forever. A
+ * launch that is going to fail outright — bad flags, binary missing, a
+ * `--resume` id with no transcript, not logged in — exits within moments,
+ * which is what the grace window catches; anything later surfaces as the
+ * first turn's failure.
+ */
+/** Process-wide default for `readyGraceMs`; tests shrink it. */
+export const launchDefaults = { readyGraceMs: 1_500 };
 
-  return new Promise<void>(async (resolve, reject) => {
-    // claude shows an interactive "Bypass Permissions mode" acceptance dialog
-    // on EVERY --dangerously-skip-permissions launch (>=2.1.2xx) and does not
-    // persist the answer, so the launcher must answer it: watch the pane and
-    // select "2. Yes, I accept" when the prompt appears. Config-flag seeding
-    // and IS_SANDBOX=1 were both tried and do not suppress it.
-    const dialogPoll = setInterval(async () => {
-      try {
-        const pane = await tmux.capturePaneOutput(tmuxName, 40);
-        if (/Yes, I accept/.test(pane)) {
-          await tmux.sendKeysLiteral(tmuxName, "2");
-          await tmux.sendEnter(tmuxName);
-          clearInterval(dialogPoll);
-        }
-      } catch {
-        // pane may not exist yet or already be gone; keep polling until launch settles
-      }
-    }, 1500);
+export function launchSession(opts: LaunchOpts): Promise<WorkerHandle> {
+  const { runtime, bus, sessionId, cwd, resume = false, mcpConfigPath, readyGraceMs = launchDefaults.readyGraceMs } = opts;
 
-    // Assigned below; referenced in the timer/catch that may fire first.
-    let unsub: () => void = () => {};
+  return new Promise<WorkerHandle>((resolve, reject) => {
+    let handle: WorkerHandle | null = null;
+    let settled = false;
 
-    const timer = setTimeout(() => {
-      clearInterval(dialogPoll);
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       unsub();
-      reject(new Error(`SessionStart timeout for ${sessionId}`));
-    }, timeoutMs);
+      fn();
+    };
 
-    unsub = bus.subscribe((event) => {
-      if (event.hook_event_name === "SessionStart" && event.session_id === sessionId) {
-        clearInterval(dialogPoll);
-        clearTimeout(timer);
-        unsub();
-        resolve();
-      }
-    });
+    const timer = setTimeout(() => finish(() => resolve(handle!)), readyGraceMs);
 
-    const launchCmd = claudeLaunchCommand({
-      args: ["--dangerously-skip-permissions", "--session-id", sessionId],
-      unsetEnv: ["ANTHROPIC_API_KEY"],
+    // Subscribe BEFORE spawning: the fake runtime (and a real claude that
+    // dies on a bad flag) can exit almost immediately.
+    const unsub = bus.subscribe((ev) => {
+      if (ev.session_id !== sessionId) return;
+      if (ev.type === "exit") finish(() => reject(new Error(`worker exited before ready (code ${ev.code}) for ${sessionId}`)));
     });
 
     try {
-      await tmux.newSession(tmuxName, cwd, launchCmd);
+      handle = runtime.spawn({ sessionId, cwd, mode: resume ? "resume" : "new", mcpConfigPath });
+      if (!handle.alive) finish(() => reject(new Error(`worker exited before ready for ${sessionId}`)));
     } catch (err) {
-      clearInterval(dialogPoll);
-      clearTimeout(timer);
-      unsub();
-      reject(err instanceof Error ? err : new Error(String(err)));
+      finish(() => reject(err instanceof Error ? err : new Error(String(err))));
     }
   });
 }

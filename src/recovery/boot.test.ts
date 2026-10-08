@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync } from "fs";
 import { reconcileOnBoot, type BootCtx } from "./boot";
 import { createDb } from "../db";
 import { createEventBus } from "../events/bus";
-import { createFakeTmux } from "../tmux/fake";
+import { createFakeRuntime } from "../worker/fake";
 import type { ParaRaidConfig } from "../types";
 
 const NOOP_LOGGER = { info: () => {}, warn: () => {}, error: () => {} } as any;
@@ -18,10 +18,10 @@ afterEach(() => {
   rmSync(TMP, { recursive: true, force: true });
 });
 
-function makeCtx(): BootCtx & { tmux: ReturnType<typeof createFakeTmux> } {
+function makeCtx(): BootCtx {
   const db = createDb(":memory:");
   const bus = createEventBus();
-  const tmux = createFakeTmux();
+  const runtime = createFakeRuntime(bus);
   const config = {
     daemon: { data_dir: TMP, socket_path: "/tmp/x.sock" },
     concurrency: { max_concurrent_turns: 3, max_total_sessions: 10 },
@@ -32,35 +32,25 @@ function makeCtx(): BootCtx & { tmux: ReturnType<typeof createFakeTmux> } {
     signing: "none",
     adapters: { test: { webhook_url: "http://x/hook" } },
   } as unknown as ParaRaidConfig;
-  return { db, bus, tmux, config, logger: NOOP_LOGGER };
+  return { db, bus, runtime, config, logger: NOOP_LOGGER };
 }
 
-function insertLiveSession(
-  ctx: BootCtx,
-  id: string,
-  tmuxName: string,
-  cwd: string,
-): void {
+function insertLiveSession(ctx: BootCtx, id: string, cwd: string): void {
   const now = Date.now();
   ctx.db.raw.run(
     `INSERT INTO sessions
-     (id, adapter_id, adapter_ref, status, tmux_session, cwd, mcp_bundle, webhook_url, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [id, "test", `ref-${id}`, "live", tmuxName, cwd, "", "http://x/hook", now, now],
+     (id, adapter_id, adapter_ref, status, cwd, mcp_bundle, webhook_url, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [id, "test", `ref-${id}`, "live", cwd, "", "http://x/hook", now, now],
   );
 }
 
-test("boot: marks live session with live tmux as recovering and enqueues session_recover_candidate", async () => {
+test("boot: a live session whose workdir survived becomes recovering with a session_recover_candidate", async () => {
   const ctx = makeCtx();
   const sessionId = "00000000-0000-4000-8000-00000000b001";
-  const tmuxName = "para-raid-boot-alive";
   const cwd = `${TMP}/wd-alive`;
   mkdirSync(cwd, { recursive: true });
-
-  // Seed the fake tmux so hasSession + listPanePid both report alive.
-  ctx.tmux.sessions.add(tmuxName);
-
-  insertLiveSession(ctx, sessionId, tmuxName, cwd);
+  insertLiveSession(ctx, sessionId, cwd);
 
   const result = await reconcileOnBoot(ctx);
   expect(result.recovering).toBe(1);
@@ -95,24 +85,18 @@ test("boot: marks live session with live tmux as recovering and enqueues session
   expect(existsSync(cwd)).toBe(true);
 });
 
-test("boot: marks live session with dead tmux as dead, cleans workdir, enqueues session_dead", async () => {
+test("boot: a live session whose workdir is gone becomes dead with session_dead", async () => {
   const ctx = makeCtx();
   const sessionId = "00000000-0000-4000-8000-00000000b002";
-  const tmuxName = "para-raid-boot-gone";
-  const cwd = `${TMP}/wd-gone`;
-  mkdirSync(cwd, { recursive: true });
-
-  // Do NOT register the tmux session — fake's hasSession returns false.
-  insertLiveSession(ctx, sessionId, tmuxName, cwd);
+  const cwd = `${TMP}/wd-gone`; // never created
+  insertLiveSession(ctx, sessionId, cwd);
 
   const result = await reconcileOnBoot(ctx);
   expect(result.dead).toBe(1);
   expect(result.recovering).toBe(0);
 
   const row = ctx.db.raw
-    .query<{ status: string }, [string]>(
-      `SELECT status FROM sessions WHERE id = ?`,
-    )
+    .query<{ status: string }, [string]>(`SELECT status FROM sessions WHERE id = ?`)
     .get(sessionId);
   expect(row?.status).toBe("dead");
 
@@ -123,9 +107,6 @@ test("boot: marks live session with dead tmux as dead, cleans workdir, enqueues 
     .all(sessionId);
   expect(enq.length).toBe(1);
   expect(enq[0].event_type).toBe("session_dead");
-  const payload = JSON.parse(enq[0].payload_json);
-  expect(payload.reason).toBe("tmux_gone_at_boot");
-
-  // Workdir should have been cleaned.
+  expect(JSON.parse(enq[0].payload_json).reason).toBe("workdir_gone_at_boot");
   expect(existsSync(cwd)).toBe(false);
 });
